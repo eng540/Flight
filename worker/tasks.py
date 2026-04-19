@@ -172,3 +172,40 @@ def run_realtime_radar_task(self):
     """Legacy stub – kept to prevent beat 'unregistered task' errors."""
     logger.info("[realtime] Legacy task called – no action")
     return {"status": "skipped", "reason": "legacy task"}
+
+
+
+
+@app.task(bind=True)
+def diagnose_opensky_task(self):
+    """Task تشخيصي يُنفذ من Worker"""
+    import subprocess
+    import httpx
+    import requests
+    
+    results = {}
+    
+    # curl
+    r = subprocess.run(
+        ["curl", "-s", "--connect-timeout", "10",
+         "https://opensky-network.org/api/states/all?lamin=24&lomin=44&lamax=25&lomax=45"],
+        capture_output=True, text=True, timeout=20
+    )
+    results["curl"] = len(r.stdout) > 100
+    
+    # httpx
+    try:
+        resp = httpx.get("https://opensky-network.org/api/states/all?lamin=24&lomin=44&lamax=25&lomax=45", timeout=10)
+        results["httpx"] = resp.status_code == 200
+    except Exception as e:
+        results["httpx"] = str(e)
+    
+    # requests
+    try:
+        resp = requests.get("https://opensky-network.org/api/states/all?lamin=24&lomin=44&lamax=25&lomax=45", timeout=10)
+        results["requests"] = resp.status_code == 200
+    except Exception as e:
+        results["requests"] = str(e)
+    
+    logger.info(f"=== OPENSKY DIAGNOSIS === {results}")
+    return results

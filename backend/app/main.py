@@ -12,6 +12,8 @@ mimetypes.add_type('image/svg+xml', '.svg')
 
 from app.config import settings
 from app.api import flights, stats, airlines, analytics, ingestion, regions
+from app.api import debug
+app.include_router(debug.router, prefix="/debug", tags=["Debug"])
 
 logging.basicConfig(
     level=logging.INFO if not settings.DEBUG else logging.DEBUG,

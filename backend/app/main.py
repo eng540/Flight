@@ -13,7 +13,6 @@ mimetypes.add_type('image/svg+xml', '.svg')
 from app.config import settings
 from app.api import flights, stats, airlines, analytics, ingestion, regions
 from app.api import debug
-app.include_router(debug.router, prefix="/debug", tags=["Debug"])
 
 logging.basicConfig(
     level=logging.INFO if not settings.DEBUG else logging.DEBUG,
@@ -55,6 +54,7 @@ async def add_process_time_header(request: Request, call_next):
 
 
 # ── API Routers ───────────────────────────────────────────────────────────────
+app.include_router(debug.router, prefix="/debug", tags=["Debug"])
 app.include_router(flights.router)
 app.include_router(stats.router)
 app.include_router(airlines.router)

@@ -4,7 +4,7 @@ import ssl
 import logging
 
 from celery import Celery
-from celery.signals import task_failure, task_success
+from celery.signals import task_failure, task_success, worker_ready
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +89,21 @@ def on_failure(sender=None, exception=None, **kwargs):
 @celery_app.task(bind=True)
 def health_check_task(self):
     return {"status": "healthy", "worker": self.request.hostname}
+
+
+@worker_ready.connect
+def trigger_initial_ingestion(sender, **kwargs):
+    """
+    SRE Fix: Trigger ingestion immediately on startup to prevent 
+    the 'Silent Empty UI' issue while waiting for the 60-min schedule.
+    """
+    logger.info("[SRE] Worker ready! Triggering initial geo-ingestion...")
+    # نرسل المهمة إلى الطابور فوراً
+    sender.app.send_task(
+        "worker.tasks.ingest_recent_geo_task",
+        queue="ingestion",
+        kwargs={"lookback_hours": 2}
+    )
 
 
 if __name__ == "__main__":

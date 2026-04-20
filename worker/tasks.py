@@ -65,7 +65,7 @@ def ingest_recent_geo_task(self, region_keys: Optional[List[str]] = None,
 
         logger.info(f"[geo] Ingesting {[r.key for r in regions]}")
         svc = FlightIngestionService()
-        result = svc.ingest_recent_for_regions(regions, lookback_hours)
+        result = svc.ingest_live_radar_for_regions(regions)  # lookback_hours ليس مطلوباً للرادار الحي
         logger.info(f"[geo] Done: {result}")
         return {"status": "success", "result": result}
     except SoftTimeLimitExceeded:

@@ -174,9 +174,7 @@ def run_realtime_radar_task(self):
     return {"status": "skipped", "reason": "legacy task"}
 
 
-
-
-@app.task(bind=True)
+@shared_task(bind=True)
 def diagnose_opensky_task(self):
     """Task تشخيصي يُنفذ من Worker"""
     import subprocess

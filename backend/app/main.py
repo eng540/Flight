@@ -54,13 +54,13 @@ async def add_process_time_header(request: Request, call_next):
 
 
 # ── API Routers ───────────────────────────────────────────────────────────────
-app.include_router(debug.router, prefix="/debug", tags=["Debug"])
 app.include_router(flights.router)
 app.include_router(stats.router)
 app.include_router(airlines.router)
 app.include_router(analytics.router)
 app.include_router(ingestion.router)
 app.include_router(regions.router)
+app.include_router(debug.router, prefix="/debug", tags=["Debug"])
 
 
 @app.get("/health")
@@ -69,7 +69,6 @@ async def health():
 
 
 # ── Serve React frontend ──────────────────────────────────────────────────────
-# In production the frontend is built into /app/frontend/dist (see Dockerfile)
 frontend_dist = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "../../frontend/dist"))
 

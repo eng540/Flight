@@ -95,8 +95,8 @@ class FlightIngestionService:
 
     def ingest_live_radar_for_regions(self, regions) -> Dict[str, int]:
         """
-        SRE Fix: Fetches live state vectors instead of historical data.
-        Transforms OpenSky array format into our standard dictionary format.
+        SRE Fix: Fetches live state vectors and formats them to match the expected
+        input of the existing DataProcessor, ensuring coordinates are saved.
         """
         if self.client.circuit_is_open:
             logger.warning("[live-radar] Circuit open – skipping")
@@ -112,45 +112,47 @@ class FlightIngestionService:
                 if self.client.circuit_is_open:
                     break
                 
-                # جلب البيانات الحية للمنطقة
+                # جلب البيانات الحية من OpenSky
                 raw_data = self.client.get_state_vectors(
                     lamin=region.lamin, lomin=region.lomin,
                     lamax=region.lamax, lomax=region.lomax
                 )
                 
                 states = raw_data.get("states")
+                
+                # تشخيص إضافي لمعرفة حالة الـ API
+                logger.info(f"[{region.key}] OpenSky response: time={raw_data.get('time', 'N/A')}, total_states={len(states) if states else 0}")
+                
                 if not states:
                     logger.info(f"[{region.key}] Live radar returned 0 flights.")
                     continue
 
-                transformed_flights = []
+                # تحويل مصفوفات OpenSky إلى قواميس تشبه البيانات التاريخية
+                formatted_for_processor = []
                 for state in states:
-                    # OpenSky State Vector Index Mapping
-                    # 0:icao24, 1:callsign, 2:country, 3:time_pos, 4:last_contact
-                    # 5:lon, 6:lat, 7:baro_alt, 8:on_ground, 9:velocity, 10:true_track
-                    transformed_flights.append({
+                    formatted_for_processor.append({
                         "icao24": state[0],
-                        "callsign": state[1].strip() if state[1] else None,
+                        "callsign": state[1],
                         "origin_country": state[2],
-                        "firstSeen": state[3] or now_ts,
-                        "lastSeen": state[4] or now_ts,
+                        "firstSeen": state[3] or now_ts,      # CamelCase كما يتوقع Processor
+                        "lastSeen": state[4] or now_ts,       # CamelCase كما يتوقع Processor
                         "longitude": state[5],
                         "latitude": state[6],
                         "altitude": state[7],
                         "on_ground": state[8],
                         "velocity": state[9],
                         "heading": state[10],
-                        # الرادار الحي لا يوفر المطارات، نتركها فارغة
                         "estDepartureAirport": None,
                         "estArrivalAirport": None
                     })
 
-                # إدخال البيانات المحولة إلى قاعدة البيانات باستخدام نفس الأنبوب القديم
-                r = self._ingest_raw(db, transformed_flights, region.key)
+                # نستخدم _ingest_raw الذي يقوم بمعالجة البيانات وتنظيفها
+                r = self._ingest_raw(db, formatted_for_processor, region.key)
                 total["created"] += r.get("created", 0)
                 total["updated"] += r.get("updated", 0)
                 
-                # تأخير بسيط لاحترام حدود الـ API
+                logger.info(f"[{region.key}] Live radar ingested: {r.get('created', 0)} created, {r.get('updated', 0)} updated")
+                
                 time.sleep(cfg.INGESTION_DELAY_SECONDS)
         finally:
             db.close()

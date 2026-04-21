@@ -44,7 +44,7 @@ def ingest_flights_task(self, hours: int = 2):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Geo-filtered periodic ingestion (runs every 30 min)
+# Geo-filtered periodic ingestion (runs every 30 min) - MODIFIED TO USE AVIATIONSTACK
 # ─────────────────────────────────────────────────────────────────────────────
 
 @shared_task(
@@ -55,7 +55,10 @@ def ingest_flights_task(self, hours: int = 2):
 )
 def ingest_recent_geo_task(self, region_keys: Optional[List[str]] = None,
                             lookback_hours: int = 2):
-    """Ingest recent flights for configured geographic regions."""
+    """
+    SRE FIX: Ingest recent flights using AviationStack to bypass OpenSky cloud IP ban.
+    Falls back to OpenSky live radar if AviationStack fails or has no API key.
+    """
     try:
         active_keys = region_keys or settings.get_active_region_keys()
         regions = [r for r in (settings.get_region(k) for k in active_keys) if r]
@@ -65,7 +68,15 @@ def ingest_recent_geo_task(self, region_keys: Optional[List[str]] = None,
 
         logger.info(f"[geo] Ingesting {[r.key for r in regions]}")
         svc = FlightIngestionService()
-        result = svc.ingest_live_radar_for_regions(regions)  # lookback_hours ليس مطلوباً للرادار الحي
+        
+        # محاولة استخدام AviationStack أولاً
+        result = svc.ingest_from_aviationstack()
+        
+        # إذا فشل AviationStack أو لم يعطي بيانات، نعود إلى OpenSky
+        if result.get("error") or (result.get("created", 0) == 0 and result.get("updated", 0) == 0):
+            logger.warning("[geo] AviationStack failed or returned 0 flights, falling back to OpenSky live radar")
+            result = svc.ingest_live_radar_for_regions(regions)
+        
         logger.info(f"[geo] Done: {result}")
         return {"status": "success", "result": result}
     except SoftTimeLimitExceeded:

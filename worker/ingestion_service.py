@@ -59,7 +59,7 @@ class FlightIngestionService:
         processed = proc.process_flights(raw)
         unique = proc.remove_duplicates(processed)
         logger.info(f"[global] {len(unique)} unique flights to ingest")
-        return self._ingest_dicts(unique)
+        return self._ingest_dicts(self._db, unique)
 
     # ── Geo recent ────────────────────────────────────────────────────────────
 
@@ -145,8 +145,8 @@ class FlightIngestionService:
                         "estArrivalAirport": None
                     })
 
-                # إدخال البيانات المحولة إلى قاعدة البيانات باستخدام نفس الأنبوب القديم
-                r = self._ingest_raw(db, transformed_flights, region.key)
+                # SRE FIX: تمرير db إلى _ingest_dicts
+                r = self._ingest_dicts(db, transformed_flights)
                 total["created"] += r.get("created", 0)
                 total["updated"] += r.get("updated", 0)
                 
@@ -214,22 +214,22 @@ class FlightIngestionService:
                     "icao24": str(icao24).lower()[:6],
                     "callsign": callsign,
                     "origin_country": None,
-                    "firstSeen": now_ts,
-                    "lastSeen": now_ts,
+                    "first_seen": now_ts,
+                    "last_seen": now_ts,
                     "longitude": live_data.get("longitude"),
                     "latitude": live_data.get("latitude"),
                     "altitude": live_data.get("altitude"),
                     "on_ground": live_data.get("is_ground", False),
                     "velocity": live_data.get("speed_horizontal"),
                     "heading": live_data.get("direction"),
-                    "estDepartureAirport": flight.get("departure", {}).get("icao"),
-                    "estArrivalAirport": flight.get("arrival", {}).get("icao"),
+                    "est_departure_airport": flight.get("departure", {}).get("icao"),
+                    "est_arrival_airport": flight.get("arrival", {}).get("icao"),
                     "region_key": "global",
                     "unique_flight_id": unique_id
                 })
 
-            # إدخال البيانات إلى قاعدة البيانات
-            r = self._ingest_dicts(transformed_flights)
+            # SRE FIX: تمرير db إلى _ingest_dicts
+            r = self._ingest_dicts(db, transformed_flights)
             total["created"] += r.get("created", 0)
             total["updated"] += r.get("updated", 0)
             
@@ -401,7 +401,8 @@ class FlightIngestionService:
                 logger.debug(f"Schema skip: {e}")
         return FlightCRUD.bulk_create(db, schemas) if schemas else {"created": 0, "updated": 0}
 
-    def _ingest_dicts(self, dicts: List[Dict]) -> Dict[str, int]:
+    # SRE FIX: إضافة المعامل db للدالة
+    def _ingest_dicts(self, db, dicts: List[Dict]) -> Dict[str, int]:
         from app.schemas import FlightCreate
         from app.crud import FlightCRUD
         schemas = []
@@ -413,6 +414,8 @@ class FlightIngestionService:
                 skipped += 1
         if not schemas:
             return {"created": 0, "updated": 0, "skipped": skipped}
-        r = FlightCRUD.bulk_create(self._db, schemas)
+        
+        # SRE FIX: استخدام db الممرر بدلاً من self._db
+        r = FlightCRUD.bulk_create(db, schemas)
         r["skipped"] = skipped + r.get("skipped", 0)
         return r

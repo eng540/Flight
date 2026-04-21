@@ -157,6 +157,91 @@ class FlightIngestionService:
             
         return total
 
+    # ── AviationStack (Real-time & Airports) ──────────────────────────────────
+    # SRE FIX: Bypasses OpenSky Cloud IP Ban by using AviationStack API
+
+    def ingest_from_aviationstack(self) -> Dict[str, int]:
+        """
+        SRE Fix: Bypasses OpenSky Cloud IP Ban by using AviationStack API.
+        Fetches live flights WITH departure/arrival airports.
+        """
+        import requests
+        import hashlib
+        
+        api_key = os.getenv("AVIATION_STACK_KEY")
+        if not api_key:
+            logger.warning("[AviationStack] API key missing! Set AVIATION_STACK_KEY env var. Falling back to OpenSky.")
+            return {"created": 0, "updated": 0, "error": "missing_key"}
+
+        total = {"created": 0, "updated": 0}
+        db = self._new_db()
+        now_ts = int(time.time())
+
+        try:
+            logger.info("[AviationStack] Fetching live active flights...")
+            url = f"http://api.aviationstack.com/v1/flights?access_key={api_key}&flight_status=active&limit=100"
+            
+            response = requests.get(url, timeout=30)
+            if response.status_code != 200:
+                logger.error(f"[AviationStack] API Error: {response.status_code} - {response.text}")
+                return total
+
+            data = response.json()
+            flights = data.get("data", [])
+            
+            if not flights:
+                logger.info("[AviationStack] Returned 0 flights.")
+                return total
+
+            transformed_flights = []
+            for flight in flights:
+                # التأكد من وجود بيانات حية للطائرة
+                live_data = flight.get("live")
+                if not live_data:
+                    continue
+
+                icao24 = flight.get("aircraft", {}).get("icao24") or flight.get("flight", {}).get("icao")
+                if not icao24:
+                    continue
+                    
+                callsign = flight.get("flight", {}).get("iata") or flight.get("flight", {}).get("icao")
+                
+                # إنشاء معرف فريد
+                unique_string = f"{icao24}_{callsign}_{now_ts}"
+                unique_id = hashlib.md5(unique_string.encode()).hexdigest()
+
+                transformed_flights.append({
+                    "icao24": str(icao24).lower()[:6],
+                    "callsign": callsign,
+                    "origin_country": None,
+                    "firstSeen": now_ts,
+                    "lastSeen": now_ts,
+                    "longitude": live_data.get("longitude"),
+                    "latitude": live_data.get("latitude"),
+                    "altitude": live_data.get("altitude"),
+                    "on_ground": live_data.get("is_ground", False),
+                    "velocity": live_data.get("speed_horizontal"),
+                    "heading": live_data.get("direction"),
+                    "estDepartureAirport": flight.get("departure", {}).get("icao"),
+                    "estArrivalAirport": flight.get("arrival", {}).get("icao"),
+                    "region_key": "global",
+                    "unique_flight_id": unique_id
+                })
+
+            # إدخال البيانات إلى قاعدة البيانات
+            r = self._ingest_dicts(transformed_flights)
+            total["created"] += r.get("created", 0)
+            total["updated"] += r.get("updated", 0)
+            
+            logger.info(f"[AviationStack] Successfully processed {len(transformed_flights)} flights. Created: {total['created']}, Updated: {total['updated']}")
+            
+        except Exception as e:
+            logger.error(f"[AviationStack] Exception occurred: {e}")
+        finally:
+            db.close()
+            
+        return total
+
     # ── Historical geo (chunked, idempotent) ──────────────────────────────────
 
     def ingest_date_range_for_region(

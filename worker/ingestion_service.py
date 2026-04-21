@@ -96,15 +96,13 @@ class FlightIngestionService:
     def ingest_live_radar_for_regions(self, regions) -> Dict[str, int]:
         """
         SRE Fix: Fetches live state vectors instead of historical data.
-        Bypasses the old DataProcessor to ensure latitude/longitude are saved.
+        Transforms OpenSky array format into our standard dictionary format.
         """
         if self.client.circuit_is_open:
             logger.warning("[live-radar] Circuit open – skipping")
             return {"created": 0, "updated": 0, "error": "circuit_open"}
 
         from app.config import settings as cfg
-        import hashlib # نحتاج هذا لإنشاء الـ ID
-        
         total = {"created": 0, "updated": 0}
         db = self._new_db()
         now_ts = int(time.time())
@@ -114,6 +112,7 @@ class FlightIngestionService:
                 if self.client.circuit_is_open:
                     break
                 
+                # جلب البيانات الحية للمنطقة
                 raw_data = self.client.get_state_vectors(
                     lamin=region.lamin, lomin=region.lomin,
                     lamax=region.lamax, lomax=region.lomax
@@ -126,38 +125,32 @@ class FlightIngestionService:
 
                 transformed_flights = []
                 for state in states:
-                    icao24 = state[0]
-                    callsign = state[1].strip() if state[1] else None
-                    first_seen = state[3] or now_ts
-                    last_seen = state[4] or now_ts
-                    
-                    # إنشاء معرف فريد يدوياً لتجاوز الـ Processor القديم
-                    unique_string = f"{icao24}_{callsign}_{first_seen}_{last_seen}"
-                    unique_id = hashlib.md5(unique_string.encode()).hexdigest()
-
+                    # OpenSky State Vector Index Mapping
+                    # 0:icao24, 1:callsign, 2:country, 3:time_pos, 4:last_contact
+                    # 5:lon, 6:lat, 7:baro_alt, 8:on_ground, 9:velocity, 10:true_track
                     transformed_flights.append({
-                        "icao24": icao24,
-                        "callsign": callsign,
+                        "icao24": state[0],
+                        "callsign": state[1].strip() if state[1] else None,
                         "origin_country": state[2],
-                        "first_seen": first_seen,
-                        "last_seen": last_seen,
+                        "firstSeen": state[3] or now_ts,
+                        "lastSeen": state[4] or now_ts,
                         "longitude": state[5],
                         "latitude": state[6],
                         "altitude": state[7],
                         "on_ground": state[8],
                         "velocity": state[9],
                         "heading": state[10],
-                        "est_departure_airport": None,
-                        "est_arrival_airport": None,
-                        "region_key": region.key,
-                        "unique_flight_id": unique_id
+                        # الرادار الحي لا يوفر المطارات، نتركها فارغة
+                        "estDepartureAirport": None,
+                        "estArrivalAirport": None
                     })
 
-                # SRE FIX: استخدام _ingest_dicts مباشرة بدلاً من _ingest_raw لحفظ الإحداثيات
-                r = self._ingest_dicts(transformed_flights)
+                # إدخال البيانات المحولة إلى قاعدة البيانات باستخدام نفس الأنبوب القديم
+                r = self._ingest_raw(db, transformed_flights, region.key)
                 total["created"] += r.get("created", 0)
                 total["updated"] += r.get("updated", 0)
                 
+                # تأخير بسيط لاحترام حدود الـ API
                 time.sleep(cfg.INGESTION_DELAY_SECONDS)
         finally:
             db.close()

@@ -44,7 +44,7 @@ def ingest_flights_task(self, hours: int = 2):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Geo-filtered periodic ingestion (runs every 30 min) - MODIFIED TO USE AVIATIONSTACK
+# Geo-filtered periodic ingestion (HYBRID: AviationStack + OpenSky)
 # ─────────────────────────────────────────────────────────────────────────────
 
 @shared_task(
@@ -56,8 +56,10 @@ def ingest_flights_task(self, hours: int = 2):
 def ingest_recent_geo_task(self, region_keys: Optional[List[str]] = None,
                             lookback_hours: int = 2):
     """
-    SRE FIX: Ingest recent flights using AviationStack to bypass OpenSky cloud IP ban.
-    Falls back to OpenSky live radar if AviationStack fails or has no API key.
+    SRE HYBRID FIX: 
+    Step 1: Fetch rich data (airports) from AviationStack
+    Step 2: Fetch massive volume (live radar) from OpenSky
+    Result: Full map + Rich metadata
     """
     try:
         active_keys = region_keys or settings.get_active_region_keys()
@@ -66,20 +68,29 @@ def ingest_recent_geo_task(self, region_keys: Optional[List[str]] = None,
             logger.warning("[geo] No valid regions configured")
             return {"status": "skipped", "reason": "no regions"}
 
-        logger.info(f"[geo] Ingesting {[r.key for r in regions]}")
         svc = FlightIngestionService()
         
-        # محاولة استخدام AviationStack أولاً
-        result = svc.ingest_from_aviationstack()
+        # الخطوة الأولى: جلب البيانات الغنية (المطارات) من AviationStack
+        logger.info("[Hybrid] Step 1: Fetching rich data (airports) from AviationStack")
+        res_av = svc.ingest_from_aviationstack()
+        logger.info(f"[Hybrid] AviationStack result: created={res_av.get('created', 0)}, updated={res_av.get('updated', 0)}")
         
-        # إذا فشل AviationStack أو لم يعطي بيانات، نعود إلى OpenSky
-        if result.get("error") or (result.get("created", 0) == 0 and result.get("updated", 0) == 0):
-            logger.warning("[geo] AviationStack failed or returned 0 flights, falling back to OpenSky live radar")
-            result = svc.ingest_live_radar_for_regions(regions)
+        # الخطوة الثانية: جلب الحجم الكثيف (الرادار الحي) من OpenSky
+        logger.info(f"[Hybrid] Step 2: Fetching massive live radar from OpenSky for {[r.key for r in regions]}")
+        res_os = svc.ingest_live_radar_for_regions(regions)
+        logger.info(f"[Hybrid] OpenSky result: created={res_os.get('created', 0)}, updated={res_os.get('updated', 0)}")
+
+        # دمج نتائج المصدرين
+        total_created = res_av.get("created", 0) + res_os.get("created", 0)
+        total_updated = res_av.get("updated", 0) + res_os.get("updated", 0)
         
-        logger.info(f"[geo] Done: {result}")
-        return {"status": "success", "result": result}
+        final_result = {'created': total_created, 'updated': total_updated}
+        logger.info(f"[Hybrid] Done: {final_result}")
+        
+        return {"status": "success", "result": final_result}
+        
     except SoftTimeLimitExceeded:
+        logger.warning("[geo] Task timed out")
         return {"status": "timeout"}
     except Exception as exc:
         logger.error(f"[geo] Failed: {exc}", exc_info=True)

@@ -162,15 +162,6 @@ class FlightDataProcessor:
                 "est_departure_time": flight_data.get("estDepartureTime"),
                 "est_arrival_time": flight_data.get("estArrivalTime"),
                 "unique_flight_id": unique_flight_id,
-                
-                # --- SRE FIX: السماح بمرور الإحداثيات للرادار الحي ---
-                # هذه الحقول تضاف من بيانات الرادار الحي (state vectors)
-                "longitude": flight_data.get("longitude"),
-                "latitude": flight_data.get("latitude"),
-                "altitude": flight_data.get("altitude"),
-                "velocity": flight_data.get("velocity"),
-                "heading": flight_data.get("heading"),
-                "on_ground": flight_data.get("on_ground"),
             }
             
             return processed

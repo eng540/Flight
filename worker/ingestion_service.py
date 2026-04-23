@@ -60,7 +60,6 @@ class FlightIngestionService:
         processed = proc.process_flights(raw)
         unique = proc.remove_duplicates(processed)
         logger.info(f"[global] {len(unique)} unique flights to ingest")
-        # SRE FIX: إنشاء اتصال db وتمريره صراحةً
         db = self._new_db()
         try:
             return self._ingest_dicts(db, unique)
@@ -118,7 +117,6 @@ class FlightIngestionService:
                 if self.client.circuit_is_open:
                     break
                 
-                # جلب البيانات الحية للمنطقة
                 raw_data = self.client.get_state_vectors(
                     lamin=region.lamin, lomin=region.lomin,
                     lamax=region.lamax, lomax=region.lomax
@@ -131,142 +129,117 @@ class FlightIngestionService:
 
                 transformed_flights = []
                 for state in states:
-                    # OpenSky State Vector Index Mapping
-                    # 0:icao24, 1:callsign, 2:country, 3:time_pos, 4:last_contact
-                    # 5:lon, 6:lat, 7:baro_alt, 8:on_ground, 9:velocity, 10:true_track
                     transformed_flights.append({
                         "icao24": state[0],
                         "callsign": state[1].strip() if state[1] else None,
                         "origin_country": state[2],
-                        "firstSeen": state[3] or now_ts,
-                        "lastSeen": state[4] or now_ts,
+                        "first_seen": state[3] or now_ts,
+                        "last_seen": state[4] or now_ts,
                         "longitude": state[5],
                         "latitude": state[6],
                         "altitude": state[7],
                         "on_ground": state[8],
                         "velocity": state[9],
                         "heading": state[10],
-                        # الرادار الحي لا يوفر المطارات، نتركها فارغة
-                        "estDepartureAirport": None,
-                        "estArrivalAirport": None
+                        "est_departure_airport": None,
+                        "est_arrival_airport": None
                     })
 
-                # إدخال البيانات المحولة إلى قاعدة البيانات باستخدام نفس الأنبوب القديم
                 r = self._ingest_raw(db, transformed_flights, region.key)
                 total["created"] += r.get("created", 0)
                 total["updated"] += r.get("updated", 0)
                 
-                # تأخير بسيط لاحترام حدود الـ API
                 time.sleep(cfg.INGESTION_DELAY_SECONDS)
         finally:
             db.close()
             
         return total
 
-    # ── AviationStack (Maximized PoC Mode) ──────────────────────────────────
+    # ── AirLabs (The Ultimate Real-time & Routing Provider) ───────────────────
 
-    def ingest_from_aviationstack(self) -> Dict[str, int]:
+    def ingest_from_airlabs(self, regions) -> Dict[str, int]:
         """
-        SRE Override: Maximizes AviationStack Free Tier usage.
-        Forces all 100 fetched flights to appear on the map by generating
-        smart mock coordinates if live data is hidden by the API.
+        SRE Master Integration: Fetches real-time flights + precise routing data 
+        from AirLabs API. Replaces OpenSky (Cloud Ban) & AviationStack (Missing Lat/Lon).
+        Fully compliant with AirLabs API v9 Documentation.
         """
         import requests
         from app.config import settings as cfg
         
-        api_key = os.getenv("AVIATION_STACK_KEY")
+        api_key = os.getenv("AIRLABS_API_KEY")
         if not api_key:
-            logger.error("[AviationStack] API key missing! Set AVIATION_STACK_KEY in Railway.")
+            logger.error("[AirLabs] API key missing! Set AIRLABS_API_KEY in Railway.")
             return {"created": 0, "updated": 0, "error": "missing_key"}
 
         total = {"created": 0, "updated": 0}
         db = self._new_db()
         now_ts = int(time.time())
 
-        # مطارات احتياطية لخلق إحداثيات تقريبية (Lat, Lon) في الشرق الأوسط
-        MOCK_AIRPORTS = {
-            "OMDB": (25.2532, 55.3657), # دبي
-            "OTHH": (25.2731, 51.6080), # الدوحة
-            "OERK": (24.9576, 46.6988), # الرياض
-            "HECA": (30.1219, 31.4056), # القاهرة
-            "LTFM": (41.2753, 28.7520), # اسطنبول
-        }
-
         try:
-            logger.info("[AviationStack] Fetching 100 active flights...")
-            url = f"http://api.aviationstack.com/v1/flights?access_key={api_key}&flight_status=active&limit=100"
-            
-            response = requests.get(url, timeout=30)
-            if response.status_code != 200:
-                logger.error(f"[AviationStack] HTTP {response.status_code} - {response.text}")
-                return total
+            for region in regions:
+                logger.info(f"[AirLabs] Fetching live flights for region: {region.key}...")
+                
+                # AirLabs bbox format: minLat,minLng,maxLat,maxLng
+                bbox = f"{region.lamin},{region.lomin},{region.lamax},{region.lomax}"
+                url = f"https://airlabs.co/api/v9/flights?api_key={api_key}&bbox={bbox}"
+                
+                # Request data from AirLabs
+                response = requests.get(url, timeout=20)
+                if response.status_code != 200:
+                    logger.error(f"[AirLabs] API Error for {region.key}: HTTP {response.status_code} - {response.text}")
+                    continue
 
-            flights = response.json().get("data", [])
-            if not flights:
-                logger.info("[AviationStack] Returned 0 flights.")
-                return total
+                data = response.json()
+                flights = data.get("response", [])
+                
+                if not flights:
+                    logger.info(f"[{region.key}] AirLabs returned 0 flights.")
+                    continue
 
-            transformed_flights = []
-            for flight in flights:
-                icao24 = flight.get("aircraft", {}).get("icao24") or flight.get("flight", {}).get("icao")
-                callsign = flight.get("flight", {}).get("iata") or flight.get("flight", {}).get("icao")
-                if not icao24 or not callsign:
-                    continue # يجب أن يكون للطائرة هوية
+                transformed_flights = []
+                for f in flights:
+                    # 1. Identity
+                    icao24 = f.get("hex")
+                    if not icao24:
+                        continue # Skip flights without a physical identifier
+                        
+                    callsign = f.get("flight_iata") or f.get("flight_icao") or f.get("reg_number")
                     
-                dep_icao = flight.get("departure", {}).get("icao")
-                arr_icao = flight.get("arrival", {}).get("icao")
-                live_data = flight.get("live")
+                    # 2. Deduplication ID
+                    unique_string = f"{icao24}_{callsign}_{now_ts}"
+                    unique_id = hashlib.md5(unique_string.encode()).hexdigest()
+
+                    # 3. Data Mapping (Compliant with AirLabs Docs)
+                    transformed_flights.append({
+                        "icao24": str(icao24).lower()[:6],
+                        "callsign": callsign,
+                        "origin_country": f.get("flag"),
+                        "first_seen": now_ts,
+                        "last_seen": now_ts,
+                        "longitude": f.get("lng"),
+                        "latitude": f.get("lat"),
+                        "altitude": f.get("alt") if f.get("alt") else 0, # In meters by default
+                        "on_ground": f.get("alt") == 0 if f.get("alt") is not None else False,
+                        "velocity": f.get("speed") if f.get("speed") else 0, # In km/h by default
+                        "heading": f.get("dir"),
+                        "est_departure_airport": f.get("dep_icao"),
+                        "est_arrival_airport": f.get("arr_icao"),
+                        "region_key": region.key,
+                        "unique_flight_id": unique_id
+                    })
+
+                # 4. Save to PostgreSQL
+                r = self._ingest_dicts(db, transformed_flights)
+                total["created"] += r.get("created", 0)
+                total["updated"] += r.get("updated", 0)
                 
-                # --- The Mocking Logic (SRE Override) ---
-                lat = None
-                lon = None
+                logger.info(f"[{region.key}] AirLabs success: {len(transformed_flights)} real flights processed.")
                 
-                # 1. حاول أخذ الإحداثيات الحقيقية إن وجدت
-                if live_data and live_data.get("latitude") and live_data.get("longitude"):
-                    lat = live_data.get("latitude")
-                    lon = live_data.get("longitude")
-                else:
-                    # 2. ابتكار إحداثيات بناءً على المطار
-                    if dep_icao in MOCK_AIRPORTS:
-                        lat = MOCK_AIRPORTS[dep_icao][0] + (now_ts % 2) # تشتيت بسيط
-                        lon = MOCK_AIRPORTS[dep_icao][1] + (now_ts % 2)
-                    elif arr_icao in MOCK_AIRPORTS:
-                        lat = MOCK_AIRPORTS[arr_icao][0] - (now_ts % 2)
-                        lon = MOCK_AIRPORTS[arr_icao][1] - (now_ts % 2)
-                    else:
-                        # 3. رمي الطائرة بشكل عشوائي فوق السعودية لتظهر على الخريطة!
-                        lat = 24.0 + (now_ts % 6) 
-                        lon = 45.0 + (now_ts % 6)
-
-                unique_id = hashlib.md5(f"{icao24}_{callsign}_{now_ts}".encode()).hexdigest()
-
-                transformed_flights.append({
-                    "icao24": str(icao24).lower()[:6],
-                    "callsign": callsign,
-                    "origin_country": "Virtual", # للدلالة على أنها محاكاة
-                    "first_seen": now_ts,
-                    "last_seen": now_ts,
-                    "longitude": lon,
-                    "latitude": lat,
-                    "altitude": live_data.get("altitude") if live_data else 35000.0,
-                    "on_ground": live_data.get("is_ground") if live_data else False,
-                    "velocity": live_data.get("speed_horizontal") if live_data else 800.0,
-                    "heading": live_data.get("direction") if live_data else 90.0,
-                    "est_departure_airport": dep_icao,
-                    "est_arrival_airport": arr_icao,
-                    "region_key": "middle_east", # إجبار ظهورها في الشرق الأوسط
-                    "unique_flight_id": unique_id
-                })
-
-            # إدخال البيانات المجهزة إلى قاعدة البيانات
-            r = self._ingest_dicts(db, transformed_flights)
-            total["created"] += r.get("created", 0)
-            total["updated"] += r.get("updated", 0)
-            
-            logger.info(f"[AviationStack] Processed {len(transformed_flights)} flights. They WILL show on the map!")
-            
+                # Delay to respect free tier limits (usually 1 request per second is safe)
+                time.sleep(1.5)
+                
         except Exception as e:
-            logger.error(f"[AviationStack] Exception: {e}")
+            logger.error(f"[AirLabs] Critical Exception: {e}")
         finally:
             db.close()
             
@@ -328,12 +301,11 @@ class FlightIngestionService:
                 logger.info(f"[{region.key}] {date_str}: {chunks_total} chunks")
 
                 created = updated = chunks_done = 0
-                empty_streak = 0   # consecutive chunks returning 0 flights
+                empty_streak = 0
                 cursor = day_begin
 
                 try:
                     while cursor < day_end:
-                        # Circuit breaker: stop mid-day if network is blocked
                         if self.client.circuit_is_open:
                             logger.warning(
                                 f"[{region.key}] {date_str} chunk {chunks_done+1}: "
@@ -353,8 +325,6 @@ class FlightIngestionService:
                             empty_streak = 0
                         else:
                             empty_streak += 1
-                            # If many consecutive chunks return nothing AND
-                            # circuit is approaching open, abort early
                             if (empty_streak >= MAX_SKIP_BEFORE_ABORT
                                     and self.client.consecutive_failures >= 3):
                                 logger.warning(
@@ -390,7 +360,6 @@ class FlightIngestionService:
                     logger.error(f"[{region.key}] {date_str} aborted: {e}")
                     IngestionJobCRUD.update_status(
                         db, job.id, "failed", error_message=str(e))
-                    # Don't continue other days if network is broken
                     if "circuit" in str(e).lower() or "blocked" in str(e).lower():
                         break
 
@@ -431,7 +400,6 @@ class FlightIngestionService:
                 logger.debug(f"Schema skip: {e}")
         return FlightCRUD.bulk_create(db, schemas) if schemas else {"created": 0, "updated": 0}
 
-    # SRE FIX: إضافة المعامل db للدالة واستخدامه بدلاً من self._db
     def _ingest_dicts(self, db, dicts: List[Dict]) -> Dict[str, int]:
         from app.schemas import FlightCreate
         from app.crud import FlightCRUD
@@ -444,7 +412,6 @@ class FlightIngestionService:
                 skipped += 1
         if not schemas:
             return {"created": 0, "updated": 0, "skipped": skipped}
-        # SRE FIX: استخدام db الممرر بدلاً من self._db
         r = FlightCRUD.bulk_create(db, schemas)
         r["skipped"] = skipped + r.get("skipped", 0)
         return r

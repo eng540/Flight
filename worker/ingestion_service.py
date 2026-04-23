@@ -59,7 +59,12 @@ class FlightIngestionService:
         processed = proc.process_flights(raw)
         unique = proc.remove_duplicates(processed)
         logger.info(f"[global] {len(unique)} unique flights to ingest")
-        return self._ingest_dicts(unique)
+        # SRE FIX: إنشاء اتصال db وتمريره صراحةً
+        db = self._new_db()
+        try:
+            return self._ingest_dicts(db, unique)
+        finally:
+            db.close()
 
     # ── Geo recent ────────────────────────────────────────────────────────────
 
@@ -152,6 +157,91 @@ class FlightIngestionService:
                 
                 # تأخير بسيط لاحترام حدود الـ API
                 time.sleep(cfg.INGESTION_DELAY_SECONDS)
+        finally:
+            db.close()
+            
+        return total
+
+    # ── AviationStack (Real-time & Airports) ──────────────────────────────────
+    # SRE FIX: Bypasses OpenSky Cloud IP Ban by using AviationStack API
+
+    def ingest_from_aviationstack(self) -> Dict[str, int]:
+        """
+        SRE Fix: Bypasses OpenSky Cloud IP Ban by using AviationStack API.
+        Fetches live flights WITH departure/arrival airports.
+        """
+        import requests
+        import hashlib
+        
+        api_key = os.getenv("AVIATION_STACK_KEY")
+        if not api_key:
+            logger.warning("[AviationStack] API key missing! Set AVIATION_STACK_KEY env var. Falling back to OpenSky.")
+            return {"created": 0, "updated": 0, "error": "missing_key"}
+
+        total = {"created": 0, "updated": 0}
+        db = self._new_db()
+        now_ts = int(time.time())
+
+        try:
+            logger.info("[AviationStack] Fetching live active flights...")
+            url = f"http://api.aviationstack.com/v1/flights?access_key={api_key}&flight_status=active&limit=100"
+            
+            response = requests.get(url, timeout=30)
+            if response.status_code != 200:
+                logger.error(f"[AviationStack] API Error: {response.status_code} - {response.text}")
+                return total
+
+            data = response.json()
+            flights = data.get("data", [])
+            
+            if not flights:
+                logger.info("[AviationStack] Returned 0 flights.")
+                return total
+
+            transformed_flights = []
+            for flight in flights:
+                # التأكد من وجود بيانات حية للطائرة
+                live_data = flight.get("live")
+                if not live_data:
+                    continue
+
+                icao24 = flight.get("aircraft", {}).get("icao24") or flight.get("flight", {}).get("icao")
+                if not icao24:
+                    continue
+                    
+                callsign = flight.get("flight", {}).get("iata") or flight.get("flight", {}).get("icao")
+                
+                # إنشاء معرف فريد
+                unique_string = f"{icao24}_{callsign}_{now_ts}"
+                unique_id = hashlib.md5(unique_string.encode()).hexdigest()
+
+                transformed_flights.append({
+                    "icao24": str(icao24).lower()[:6],
+                    "callsign": callsign,
+                    "origin_country": None,
+                    "firstSeen": now_ts,
+                    "lastSeen": now_ts,
+                    "longitude": live_data.get("longitude"),
+                    "latitude": live_data.get("latitude"),
+                    "altitude": live_data.get("altitude"),
+                    "on_ground": live_data.get("is_ground", False),
+                    "velocity": live_data.get("speed_horizontal"),
+                    "heading": live_data.get("direction"),
+                    "estDepartureAirport": flight.get("departure", {}).get("icao"),
+                    "estArrivalAirport": flight.get("arrival", {}).get("icao"),
+                    "region_key": "global",
+                    "unique_flight_id": unique_id
+                })
+
+            # SRE FIX: تمرير db صراحةً إلى _ingest_dicts
+            r = self._ingest_dicts(db, transformed_flights)
+            total["created"] += r.get("created", 0)
+            total["updated"] += r.get("updated", 0)
+            
+            logger.info(f"[AviationStack] Successfully processed {len(transformed_flights)} flights. Created: {total['created']}, Updated: {total['updated']}")
+            
+        except Exception as e:
+            logger.error(f"[AviationStack] Exception occurred: {e}")
         finally:
             db.close()
             
@@ -316,7 +406,8 @@ class FlightIngestionService:
                 logger.debug(f"Schema skip: {e}")
         return FlightCRUD.bulk_create(db, schemas) if schemas else {"created": 0, "updated": 0}
 
-    def _ingest_dicts(self, dicts: List[Dict]) -> Dict[str, int]:
+    # SRE FIX: إضافة المعامل db للدالة واستخدامه بدلاً من self._db
+    def _ingest_dicts(self, db, dicts: List[Dict]) -> Dict[str, int]:
         from app.schemas import FlightCreate
         from app.crud import FlightCRUD
         schemas = []
@@ -328,6 +419,7 @@ class FlightIngestionService:
                 skipped += 1
         if not schemas:
             return {"created": 0, "updated": 0, "skipped": skipped}
-        r = FlightCRUD.bulk_create(self._db, schemas)
+        # SRE FIX: استخدام db الممرر بدلاً من self._db
+        r = FlightCRUD.bulk_create(db, schemas)
         r["skipped"] = skipped + r.get("skipped", 0)
         return r

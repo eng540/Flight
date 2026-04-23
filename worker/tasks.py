@@ -44,7 +44,7 @@ def ingest_flights_task(self, hours: int = 2):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Geo-filtered periodic ingestion (runs every 30 min)
+# Geo-filtered periodic ingestion (HYBRID: AviationStack + OpenSky)
 # ─────────────────────────────────────────────────────────────────────────────
 
 @shared_task(
@@ -55,7 +55,12 @@ def ingest_flights_task(self, hours: int = 2):
 )
 def ingest_recent_geo_task(self, region_keys: Optional[List[str]] = None,
                             lookback_hours: int = 2):
-    """Ingest recent flights for configured geographic regions."""
+    """
+    SRE HYBRID FIX: 
+    Step 1: Fetch rich data (airports) from AviationStack
+    Step 2: Fetch massive volume (live radar) from OpenSky
+    Result: Full map + Rich metadata
+    """
     try:
         active_keys = region_keys or settings.get_active_region_keys()
         regions = [r for r in (settings.get_region(k) for k in active_keys) if r]
@@ -63,12 +68,29 @@ def ingest_recent_geo_task(self, region_keys: Optional[List[str]] = None,
             logger.warning("[geo] No valid regions configured")
             return {"status": "skipped", "reason": "no regions"}
 
-        logger.info(f"[geo] Ingesting {[r.key for r in regions]}")
         svc = FlightIngestionService()
-        result = svc.ingest_live_radar_for_regions(regions)  # lookback_hours ليس مطلوباً للرادار الحي
-        logger.info(f"[geo] Done: {result}")
-        return {"status": "success", "result": result}
+        
+        # الخطوة الأولى: جلب البيانات الغنية (المطارات) من AviationStack
+        logger.info("[Hybrid] Step 1: Fetching rich data (airports) from AviationStack")
+        res_av = svc.ingest_from_aviationstack()
+        logger.info(f"[Hybrid] AviationStack result: created={res_av.get('created', 0)}, updated={res_av.get('updated', 0)}")
+        
+        # الخطوة الثانية: جلب الحجم الكثيف (الرادار الحي) من OpenSky
+        logger.info(f"[Hybrid] Step 2: Fetching massive live radar from OpenSky for {[r.key for r in regions]}")
+        res_os = svc.ingest_live_radar_for_regions(regions)
+        logger.info(f"[Hybrid] OpenSky result: created={res_os.get('created', 0)}, updated={res_os.get('updated', 0)}")
+
+        # دمج نتائج المصدرين
+        total_created = res_av.get("created", 0) + res_os.get("created", 0)
+        total_updated = res_av.get("updated", 0) + res_os.get("updated", 0)
+        
+        final_result = {'created': total_created, 'updated': total_updated}
+        logger.info(f"[Hybrid] Done: {final_result}")
+        
+        return {"status": "success", "result": final_result}
+        
     except SoftTimeLimitExceeded:
+        logger.warning("[geo] Task timed out")
         return {"status": "timeout"}
     except Exception as exc:
         logger.error(f"[geo] Failed: {exc}", exc_info=True)

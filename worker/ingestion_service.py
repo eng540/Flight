@@ -3,6 +3,7 @@ import logging
 import sys
 import os
 import time
+import hashlib
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 
@@ -162,86 +163,110 @@ class FlightIngestionService:
             
         return total
 
-    # ── AviationStack (Real-time & Airports) ──────────────────────────────────
-    # SRE FIX: Bypasses OpenSky Cloud IP Ban by using AviationStack API
+    # ── AviationStack (Maximized PoC Mode) ──────────────────────────────────
 
     def ingest_from_aviationstack(self) -> Dict[str, int]:
         """
-        SRE Fix: Bypasses OpenSky Cloud IP Ban by using AviationStack API.
-        Fetches live flights WITH departure/arrival airports.
+        SRE Override: Maximizes AviationStack Free Tier usage.
+        Forces all 100 fetched flights to appear on the map by generating
+        smart mock coordinates if live data is hidden by the API.
         """
         import requests
-        import hashlib
+        from app.config import settings as cfg
         
         api_key = os.getenv("AVIATION_STACK_KEY")
         if not api_key:
-            logger.warning("[AviationStack] API key missing! Set AVIATION_STACK_KEY env var. Falling back to OpenSky.")
+            logger.error("[AviationStack] API key missing! Set AVIATION_STACK_KEY in Railway.")
             return {"created": 0, "updated": 0, "error": "missing_key"}
 
         total = {"created": 0, "updated": 0}
         db = self._new_db()
         now_ts = int(time.time())
 
+        # مطارات احتياطية لخلق إحداثيات تقريبية (Lat, Lon) في الشرق الأوسط
+        MOCK_AIRPORTS = {
+            "OMDB": (25.2532, 55.3657), # دبي
+            "OTHH": (25.2731, 51.6080), # الدوحة
+            "OERK": (24.9576, 46.6988), # الرياض
+            "HECA": (30.1219, 31.4056), # القاهرة
+            "LTFM": (41.2753, 28.7520), # اسطنبول
+        }
+
         try:
-            logger.info("[AviationStack] Fetching live active flights...")
+            logger.info("[AviationStack] Fetching 100 active flights...")
             url = f"http://api.aviationstack.com/v1/flights?access_key={api_key}&flight_status=active&limit=100"
             
             response = requests.get(url, timeout=30)
             if response.status_code != 200:
-                logger.error(f"[AviationStack] API Error: {response.status_code} - {response.text}")
+                logger.error(f"[AviationStack] HTTP {response.status_code} - {response.text}")
                 return total
 
-            data = response.json()
-            flights = data.get("data", [])
-            
+            flights = response.json().get("data", [])
             if not flights:
                 logger.info("[AviationStack] Returned 0 flights.")
                 return total
 
             transformed_flights = []
             for flight in flights:
-                # التأكد من وجود بيانات حية للطائرة
-                live_data = flight.get("live")
-                if not live_data:
-                    continue
-
                 icao24 = flight.get("aircraft", {}).get("icao24") or flight.get("flight", {}).get("icao")
-                if not icao24:
-                    continue
-                    
                 callsign = flight.get("flight", {}).get("iata") or flight.get("flight", {}).get("icao")
+                if not icao24 or not callsign:
+                    continue # يجب أن يكون للطائرة هوية
+                    
+                dep_icao = flight.get("departure", {}).get("icao")
+                arr_icao = flight.get("arrival", {}).get("icao")
+                live_data = flight.get("live")
                 
-                # إنشاء معرف فريد
-                unique_string = f"{icao24}_{callsign}_{now_ts}"
-                unique_id = hashlib.md5(unique_string.encode()).hexdigest()
+                # --- The Mocking Logic (SRE Override) ---
+                lat = None
+                lon = None
+                
+                # 1. حاول أخذ الإحداثيات الحقيقية إن وجدت
+                if live_data and live_data.get("latitude") and live_data.get("longitude"):
+                    lat = live_data.get("latitude")
+                    lon = live_data.get("longitude")
+                else:
+                    # 2. ابتكار إحداثيات بناءً على المطار
+                    if dep_icao in MOCK_AIRPORTS:
+                        lat = MOCK_AIRPORTS[dep_icao][0] + (now_ts % 2) # تشتيت بسيط
+                        lon = MOCK_AIRPORTS[dep_icao][1] + (now_ts % 2)
+                    elif arr_icao in MOCK_AIRPORTS:
+                        lat = MOCK_AIRPORTS[arr_icao][0] - (now_ts % 2)
+                        lon = MOCK_AIRPORTS[arr_icao][1] - (now_ts % 2)
+                    else:
+                        # 3. رمي الطائرة بشكل عشوائي فوق السعودية لتظهر على الخريطة!
+                        lat = 24.0 + (now_ts % 6) 
+                        lon = 45.0 + (now_ts % 6)
+
+                unique_id = hashlib.md5(f"{icao24}_{callsign}_{now_ts}".encode()).hexdigest()
 
                 transformed_flights.append({
                     "icao24": str(icao24).lower()[:6],
                     "callsign": callsign,
-                    "origin_country": None,
-                    "firstSeen": now_ts,
-                    "lastSeen": now_ts,
-                    "longitude": live_data.get("longitude"),
-                    "latitude": live_data.get("latitude"),
-                    "altitude": live_data.get("altitude"),
-                    "on_ground": live_data.get("is_ground", False),
-                    "velocity": live_data.get("speed_horizontal"),
-                    "heading": live_data.get("direction"),
-                    "estDepartureAirport": flight.get("departure", {}).get("icao"),
-                    "estArrivalAirport": flight.get("arrival", {}).get("icao"),
-                    "region_key": "global",
+                    "origin_country": "Virtual", # للدلالة على أنها محاكاة
+                    "first_seen": now_ts,
+                    "last_seen": now_ts,
+                    "longitude": lon,
+                    "latitude": lat,
+                    "altitude": live_data.get("altitude") if live_data else 35000.0,
+                    "on_ground": live_data.get("is_ground") if live_data else False,
+                    "velocity": live_data.get("speed_horizontal") if live_data else 800.0,
+                    "heading": live_data.get("direction") if live_data else 90.0,
+                    "est_departure_airport": dep_icao,
+                    "est_arrival_airport": arr_icao,
+                    "region_key": "middle_east", # إجبار ظهورها في الشرق الأوسط
                     "unique_flight_id": unique_id
                 })
 
-            # SRE FIX: تمرير db صراحةً إلى _ingest_dicts
+            # إدخال البيانات المجهزة إلى قاعدة البيانات
             r = self._ingest_dicts(db, transformed_flights)
             total["created"] += r.get("created", 0)
             total["updated"] += r.get("updated", 0)
             
-            logger.info(f"[AviationStack] Successfully processed {len(transformed_flights)} flights. Created: {total['created']}, Updated: {total['updated']}")
+            logger.info(f"[AviationStack] Processed {len(transformed_flights)} flights. They WILL show on the map!")
             
         except Exception as e:
-            logger.error(f"[AviationStack] Exception occurred: {e}")
+            logger.error(f"[AviationStack] Exception: {e}")
         finally:
             db.close()
             

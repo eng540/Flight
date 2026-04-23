@@ -44,7 +44,7 @@ def ingest_flights_task(self, hours: int = 2):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Geo-filtered periodic ingestion (HYBRID: AviationStack + OpenSky)
+# Geo-filtered periodic ingestion (SRE PoC: AviationStack only)
 # ─────────────────────────────────────────────────────────────────────────────
 
 @shared_task(
@@ -55,45 +55,20 @@ def ingest_flights_task(self, hours: int = 2):
 )
 def ingest_recent_geo_task(self, region_keys: Optional[List[str]] = None,
                             lookback_hours: int = 2):
-    """
-    SRE HYBRID FIX: 
-    Step 1: Fetch rich data (airports) from AviationStack
-    Step 2: Fetch massive volume (live radar) from OpenSky
-    Result: Full map + Rich metadata
-    """
+    """SRE PoC: Ingest flights exclusively from AviationStack."""
     try:
-        active_keys = region_keys or settings.get_active_region_keys()
-        regions = [r for r in (settings.get_region(k) for k in active_keys) if r]
-        if not regions:
-            logger.warning("[geo] No valid regions configured")
-            return {"status": "skipped", "reason": "no regions"}
-
         svc = FlightIngestionService()
+        logger.info("[SRE] Running Maximized AviationStack Ingestion...")
         
-        # الخطوة الأولى: جلب البيانات الغنية (المطارات) من AviationStack
-        logger.info("[Hybrid] Step 1: Fetching rich data (airports) from AviationStack")
-        res_av = svc.ingest_from_aviationstack()
-        logger.info(f"[Hybrid] AviationStack result: created={res_av.get('created', 0)}, updated={res_av.get('updated', 0)}")
-        
-        # الخطوة الثانية: جلب الحجم الكثيف (الرادار الحي) من OpenSky
-        logger.info(f"[Hybrid] Step 2: Fetching massive live radar from OpenSky for {[r.key for r in regions]}")
-        res_os = svc.ingest_live_radar_for_regions(regions)
-        logger.info(f"[Hybrid] OpenSky result: created={res_os.get('created', 0)}, updated={res_os.get('updated', 0)}")
+        final_result = svc.ingest_from_aviationstack()
 
-        # دمج نتائج المصدرين
-        total_created = res_av.get("created", 0) + res_os.get("created", 0)
-        total_updated = res_av.get("updated", 0) + res_os.get("updated", 0)
-        
-        final_result = {'created': total_created, 'updated': total_updated}
-        logger.info(f"[Hybrid] Done: {final_result}")
-        
+        logger.info(f"[SRE] Done: {final_result}")
         return {"status": "success", "result": final_result}
         
     except SoftTimeLimitExceeded:
-        logger.warning("[geo] Task timed out")
         return {"status": "timeout"}
     except Exception as exc:
-        logger.error(f"[geo] Failed: {exc}", exc_info=True)
+        logger.error(f"[SRE] Failed: {exc}", exc_info=True)
         try:
             self.retry(exc=exc)
         except MaxRetriesExceededError:

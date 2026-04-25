@@ -1,32 +1,42 @@
 """Enterprise Architecture - Drop old tables and create Snowflake Schema
 
 Revision ID: 001
-Revises: 002
+Revises: 
 Create Date: 2026-04-24 00:00:00.000000
 
 """
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.engine.reflection import Inspector
 
 # revision identifiers, used by Alembic.
 revision = '001'
-down_revision = 002
+down_revision = None
 branch_labels = None
 depends_on = None
 
 def upgrade() -> None:
     # =========================================================================
-    # 1. DROP LEGACY TABLES (Clean Slate)
+    # SRE FIX: FORCE WIPE ALEMBIC HISTORY
     # =========================================================================
-    # We use IF EXISTS to ensure it doesn't crash if the tables are already gone
+    conn = op.get_bind()
+    inspector = Inspector.from_engine(conn)
+    
+    # 1. إذا كان جدول alembic_version موجوداً، نمسح ما بداخله لنسيان الماضي
+    if 'alembic_version' in inspector.get_table_names():
+        op.execute("DELETE FROM alembic_version")
+
+    # =========================================================================
+    # 2. DROP LEGACY TABLES (Clean Slate)
+    # =========================================================================
     op.execute("DROP TABLE IF EXISTS ingestion_jobs CASCADE")
     op.execute("DROP TABLE IF EXISTS flights CASCADE")
     op.execute("DROP TABLE IF EXISTS airlines CASCADE")
     op.execute("DROP TABLE IF EXISTS countries CASCADE")
 
     # =========================================================================
-    # 2. CREATE DIMENSION TABLES (Reference Data)
+    # 3. CREATE DIMENSION TABLES (Reference Data)
     # =========================================================================
     
     # DimGeography (Airports & Regions)

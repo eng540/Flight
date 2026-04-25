@@ -25,12 +25,21 @@ else
 fi
 
 # ── Run Alembic migrations ────────────────────────────────────────────────────
-# ROOT CAUSE NOTE: PYTHONPATH must be EMPTY when running alembic.
-# If /app/backend is in PYTHONPATH, Python resolves the local /app/backend/alembic/
-# directory before the installed 'alembic' package → ModuleNotFoundError.
-# alembic/env.py adds /app/backend to sys.path itself after alembic loads.
 echo "🔄 Running database migrations..."
 export PYTHONPATH=/app/backend:/app
+
+# ── Fix: ensure Alembic knows the current state ──────────────────────────────
+# If the 'alembic_version' table exists but is empty (or no current revision),
+# stamp it as 'base' so that Alembic can start from the very beginning.
+# This solves the "AssertionError" or "KeyError: '002'" caused by missing
+# initialisation when down_revision = None is used.
+CURRENT_REV=$(PYTHONPATH="" alembic -c /app/backend/alembic.ini current 2>/dev/null || echo "")
+if [[ "$CURRENT_REV" == *"No current revision"* ]] || [[ -z "$CURRENT_REV" ]]; then
+    echo "📌 No revision found – stamping database as 'base'"
+    PYTHONPATH="" alembic -c /app/backend/alembic.ini stamp base
+fi
+
+# Now run the real upgrade
 PYTHONPATH="" alembic -c /app/backend/alembic.ini upgrade head
 echo "✅ Migrations complete"
 

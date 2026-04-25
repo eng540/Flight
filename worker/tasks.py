@@ -44,7 +44,7 @@ def ingest_flights_task(self, hours: int = 2):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Geo-filtered periodic ingestion (SRE PoC: AviationStack only)
+# Geo-filtered periodic ingestion (SRE Production: AirLabs ONLY)
 # ─────────────────────────────────────────────────────────────────────────────
 
 @shared_task(
@@ -55,20 +55,34 @@ def ingest_flights_task(self, hours: int = 2):
 )
 def ingest_recent_geo_task(self, region_keys: Optional[List[str]] = None,
                             lookback_hours: int = 2):
-    """SRE PoC: Ingest flights exclusively from AviationStack."""
+    """
+    SRE Production: Ingest real-time flights & routes exclusively from AirLabs.
+    This is the PRIMARY source for live radar data.
+    """
     try:
-        svc = FlightIngestionService()
-        logger.info("[SRE] Running Maximized AviationStack Ingestion...")
+        # Get active regions (all or specified ones)
+        active_keys = region_keys or settings.get_active_region_keys()
+        regions = [r for r in (settings.get_region(k) for k in active_keys) if r]
         
-        final_result = svc.ingest_from_aviationstack()
+        if not regions:
+            logger.warning("[AirLabs] No valid regions configured")
+            return {"status": "skipped", "reason": "no regions"}
 
-        logger.info(f"[SRE] Done: {final_result}")
+        # Initialize ingestion service
+        svc = FlightIngestionService()
+        logger.info(f"[AirLabs Master] Running real-time ingestion for {[r.key for r in regions]}")
+        
+        # Call our NEW and ONLY source for live radar
+        final_result = svc.ingest_from_airlabs(regions)
+
+        logger.info(f"[AirLabs Master] Ingestion completed: {final_result}")
         return {"status": "success", "result": final_result}
         
     except SoftTimeLimitExceeded:
+        logger.warning("[AirLabs] Task timed out")
         return {"status": "timeout"}
     except Exception as exc:
-        logger.error(f"[SRE] Failed: {exc}", exc_info=True)
+        logger.error(f"[AirLabs Master] Critical failure: {exc}", exc_info=True)
         try:
             self.retry(exc=exc)
         except MaxRetriesExceededError:
@@ -157,7 +171,7 @@ def cleanup_old_data_task(self, days: int = 0):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Legacy stub – prevents "unregistered task" errors in beat logs
+# Legacy stubs – prevents "unregistered task" errors in beat logs
 # ─────────────────────────────────────────────────────────────────────────────
 
 @shared_task(
@@ -169,3 +183,17 @@ def run_realtime_radar_task(self):
     """Legacy stub – kept to prevent beat 'unregistered task' errors."""
     logger.info("[realtime] Legacy task called – no action")
     return {"status": "skipped", "reason": "legacy task"}
+
+
+@shared_task(
+    bind=True,
+    name="worker.tasks.ingest_aviationstack_task", 
+    queue="ingestion",
+)
+def ingest_aviationstack_task(self):
+    """
+    LEGACY STUB: AviationStack has been replaced by AirLabs.
+    This task remains only to prevent Celery beat errors during migration.
+    """
+    logger.warning("[AviationStack] This task is DEPRECATED. Use AirLabs instead.")
+    return {"status": "skipped", "reason": "replaced_by_airlabs", "provider": "AirLabs"}

@@ -1,224 +1,101 @@
-"""Pydantic schemas for API validation."""
+"""
+Enterprise Pydantic Schemas (v3.0)
+Strict validation and typing for the Snowflake Architecture.
+"""
 from pydantic import BaseModel, Field, ConfigDict
-from typing import Optional, List, Any, Dict
-from datetime import datetime
+from typing import Optional, List, Dict, Any
+from datetime import datetime, date
 
+# ── DIMENSIONS (Reference Data) ─────────────────────────────────────────────
 
-# ── Country ────────────────────────────────────────────────────────────────
-class CountryBase(BaseModel):
-    name: str = Field(..., min_length=1, max_length=100)
-    iso_code: Optional[str] = Field(None, max_length=3)
+class DimGeographyBase(BaseModel):
+    icao_code: Optional[str] = Field(None, max_length=4)
+    iata_code: Optional[str] = Field(None, max_length=3)
+    name: str = Field(..., max_length=255)
+    city: Optional[str] = Field(None, max_length=100)
+    country_code: Optional[str] = Field(None, max_length=2)
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    elevation_m: Optional[float] = None
 
-class CountryCreate(CountryBase):
-    pass
-
-class CountryResponse(CountryBase):
+class DimGeographyResponse(DimGeographyBase):
     model_config = ConfigDict(from_attributes=True)
     id: int
-    created_at: Optional[datetime] = None
 
+class DimOperatorBase(BaseModel):
+    icao_code: Optional[str] = Field(None, max_length=3)
+    iata_code: Optional[str] = Field(None, max_length=2)
+    name: str = Field(..., max_length=255)
+    country_code: Optional[str] = Field(None, max_length=2)
+    operator_type: Optional[str] = Field(None, max_length=50)
 
-# ── Airline ────────────────────────────────────────────────────────────────
-class AirlineBase(BaseModel):
-    icao24: str = Field(..., min_length=4, max_length=6)
-    name: Optional[str] = Field(None, max_length=200)
-    callsign_prefix: Optional[str] = Field(None, max_length=10)
-
-class AirlineCreate(AirlineBase):
-    country_id: Optional[int] = None
-
-class AirlineResponse(AirlineBase):
+class DimOperatorResponse(DimOperatorBase):
     model_config = ConfigDict(from_attributes=True)
     id: int
-    country_id: Optional[int] = None
-    country: Optional[CountryResponse] = None
-    created_at: Optional[datetime] = None
-    flight_count: Optional[int] = 0
 
-
-# ── Flight ─────────────────────────────────────────────────────────────────
-class FlightBase(BaseModel):
+class DimAircraftBase(BaseModel):
     icao24: str = Field(..., min_length=4, max_length=6)
+    registration: Optional[str] = Field(None, max_length=20)
+    manufacturer: Optional[str] = Field(None, max_length=100)
+    model: Optional[str] = Field(None, max_length=100)
+    type_code: Optional[str] = Field(None, max_length=10)
+
+class DimAircraftResponse(DimAircraftBase):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    operator: Optional[DimOperatorResponse] = None
+
+# ── FACTS & TELEMETRY (Operational Data) ────────────────────────────────────
+
+class TrackTelemetryBase(BaseModel):
+    timestamp: datetime
+    latitude: float
+    longitude: float
+    altitude_m: Optional[float] = None
+    velocity_kmh: Optional[float] = None
+    heading_deg: Optional[float] = None
+    is_on_ground: Optional[bool] = False
+
+class FlightSessionBase(BaseModel):
     callsign: Optional[str] = Field(None, max_length=20)
-    origin_country: Optional[str] = Field(None, max_length=100)
+    first_seen_ts: datetime
+    last_seen_ts: datetime
+    flight_status: Optional[str] = "active"
 
-class FlightCreate(FlightBase):
-    first_seen: Optional[int] = None
-    last_seen: Optional[int] = None
-    est_departure_airport: Optional[str] = Field(None, max_length=4)
-    est_departure_airport_horiz_distance: Optional[int] = None
-    est_departure_airport_vert_distance: Optional[int] = None
-    est_arrival_airport: Optional[str] = Field(None, max_length=4)
-    est_arrival_airport_horiz_distance: Optional[int] = None
-    est_arrival_airport_vert_distance: Optional[int] = None
-    est_departure_time: Optional[int] = None
-    est_arrival_time: Optional[int] = None
-    latitude: Optional[float] = None
-    longitude: Optional[float] = None
-    altitude: Optional[float] = None
-    velocity: Optional[float] = None
-    heading: Optional[float] = None
-    on_ground: Optional[bool] = None
-    trajectory: Optional[List[Dict[str, Any]]] = None
-    region_key: Optional[str] = None
-    unique_flight_id: str = Field(..., max_length=100)
-
-class FlightResponse(FlightBase):
+class FlightSessionResponse(FlightSessionBase):
     model_config = ConfigDict(from_attributes=True)
-    id: int
-    airline_id: Optional[int] = None
-    airline: Optional[AirlineResponse] = None
-    first_seen: Optional[int] = None
-    last_seen: Optional[int] = None
-    est_departure_airport: Optional[str] = None
-    est_arrival_airport: Optional[str] = None
-    est_departure_time: Optional[int] = None
-    est_arrival_time: Optional[int] = None
-    latitude: Optional[float] = None
-    longitude: Optional[float] = None
-    altitude: Optional[float] = None
-    velocity: Optional[float] = None
-    heading: Optional[float] = None
-    on_ground: Optional[bool] = None
-    region_key: Optional[str] = None
-    ingestion_time: Optional[datetime] = None
-    duration_seconds: Optional[int] = None
-    duration_minutes: Optional[float] = None
-    duration_hours: Optional[float] = None
-
-class FlightWithTrajectory(FlightResponse):
-    trajectory: Optional[List[Dict[str, Any]]] = None
+    session_id: int
+    aircraft: Optional[DimAircraftResponse] = None
+    operator: Optional[DimOperatorResponse] = None
+    dep_airport: Optional[DimGeographyResponse] = None
+    arr_airport: Optional[DimGeographyResponse] = None
+    # For UI performance, we might include the latest track or all tracks
+    tracks: Optional[List[TrackTelemetryBase]] = []
 
 class FlightListResponse(BaseModel):
     total: int
     page: int
     page_size: int
     pages: int
-    data: List[FlightResponse]
+    data: List[FlightSessionResponse]
 
-
-# ── Filter params (kept for compatibility) ──────────────────────────────────
-class FlightFilterParams(BaseModel):
-    airline_id: Optional[int] = None
-    country: Optional[str] = None
-    date_from: Optional[str] = Field(None, description="YYYY-MM-DD")
-    date_to: Optional[str] = Field(None, description="YYYY-MM-DD")
-    departure_airport: Optional[str] = Field(None, max_length=4)
-    arrival_airport: Optional[str] = Field(None, max_length=4)
-    region_key: Optional[str] = None
-    begin_ts: Optional[int] = None
-    end_ts: Optional[int] = None
-    lamin: Optional[float] = None
-    lomin: Optional[float] = None
-    lamax: Optional[float] = None
-    lomax: Optional[float] = None
-    page: int = Field(1, ge=1)
-    page_size: int = Field(50, ge=1, le=500)
-
-
-# ── Statistics ──────────────────────────────────────────────────────────────
-class DailyFlightStats(BaseModel):
-    date: str
-    flight_count: int
-
-class AirlineActivityStats(BaseModel):
-    airline_icao24: str
-    airline_name: Optional[str]
-    flight_count: int
-
-class CountryActivityStats(BaseModel):
-    country_name: str
-    flight_count: int
-
-class FlightStatistics(BaseModel):
-    total_flights: int
-    daily_stats: List[DailyFlightStats]
-    top_airlines: List[AirlineActivityStats]
-    top_countries: List[CountryActivityStats]
-    flights_today: int
-    flights_this_week: int
-    flights_this_month: int
-
-
-# ── Analytics ───────────────────────────────────────────────────────────────
-class CountryStats(BaseModel):
-    country_name: str
-    flight_count: int
-
-class DailyStats(BaseModel):
-    date: str
-    flight_count: int
-
-class HourlyStats(BaseModel):
-    hour: int
-    flight_count: int
-
-class AirportStats(BaseModel):
-    airport_icao: str
-    flight_count: int
-    as_departure: int
-    as_arrival: int
-
-class RouteStats(BaseModel):
-    departure: str
-    arrival: str
-    flight_count: int
-
-class AnalyticsSummary(BaseModel):
-    total_flights: int
-    unique_countries: int
-    unique_airports: int
-    top_countries: List[CountryStats]
-
-
-# ── Ingestion Job ────────────────────────────────────────────────────────────
-class IngestionJobResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-    id: int
-    date_str: str
-    region_key: str
-    lamin: float
-    lomin: float
-    lamax: float
-    lomax: float
-    begin_ts: int
-    end_ts: int
-    status: str
-    flights_ingested: int
-    chunks_total: int
-    chunks_done: int
-    error_message: Optional[str] = None
-    created_at: Optional[datetime] = None
-    started_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
-
-class IngestionStartRequest(BaseModel):
-    begin_date: str = Field(..., description="YYYY-MM-DD")
-    end_date: str = Field(..., description="YYYY-MM-DD inclusive")
-    region_keys: List[str]
-    force_reingest: bool = False
-
-class IngestionJobListResponse(BaseModel):
-    total: int
-    data: List[IngestionJobResponse]
-
-
-# ── Region ───────────────────────────────────────────────────────────────────
-class RegionResponse(BaseModel):
-    key: str
-    name: str
-    name_ar: str
-    lamin: float
-    lomin: float
-    lamax: float
-    lomax: float
-    center_lat: float
-    center_lon: float
-
-
-# ── Health ────────────────────────────────────────────────────────────────────
-class HealthCheck(BaseModel):
-    status: str
-    timestamp: datetime
-    database: str
-    version: str = "2.0.0"
+# ── INGESTION (Internal Use) ────────────────────────────────────────────────
+# This schema is used by the Worker to send flattened data to the CRUD layer,
+# which then splits it into the proper Star Schema tables.
+class RawIngestionPayload(BaseModel):
+    icao24: str
+    callsign: Optional[str] = None
+    registration: Optional[str] = None
+    operator_iata: Optional[str] = None
+    operator_icao: Optional[str] = None
+    origin_country: Optional[str] = None
+    timestamp: int
+    longitude: float
+    latitude: float
+    altitude: Optional[float] = 0.0
+    velocity: Optional[float] = 0.0
+    heading: Optional[float] = None
+    on_ground: Optional[bool] = False
+    est_departure_airport: Optional[str] = None
+    est_arrival_airport: Optional[str] = None
+    region_key: Optional[str] = "global"

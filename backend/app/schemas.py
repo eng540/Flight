@@ -157,3 +157,46 @@ class AnalyticsSummary(BaseModel):
     unique_countries: int
     unique_airports: int
     top_countries: List[CountryStats]
+
+# ── REGIONS SCHEMA (For UI Compatibility) ──────────────────────────────────
+
+class RegionResponse(BaseModel):
+    key: str
+    name: str
+    name_ar: str
+    lamin: float
+    lomin: float
+    lamax: float
+    lomax: float
+    center_lat: float
+    center_lon: float
+
+class IngestionJobResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    date_str: str
+    region_key: str
+    lamin: float
+    lomin: float
+    lamax: float
+    lomax: float
+    begin_ts: int
+    end_ts: int
+    status: str
+    flights_ingested: int
+    chunks_total: int
+    chunks_done: int
+    error_message: Optional[str] = None
+    created_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+class IngestionJobListResponse(BaseModel):
+    total: int
+    data: List[IngestionJobResponse]
+
+class IngestionStartRequest(BaseModel):
+    begin_date: str = Field(..., description="YYYY-MM-DD")
+    end_date: str = Field(..., description="YYYY-MM-DD inclusive")
+    region_keys: List[str]
+    force_reingest: bool = False

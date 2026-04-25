@@ -25,14 +25,10 @@ else
 fi
 
 # ── Run Alembic migrations ────────────────────────────────────────────────────
-# ROOT CAUSE NOTE: PYTHONPATH must be EMPTY when running alembic.
-# If /app/backend is in PYTHONPATH, Python resolves the local /app/backend/alembic/
-# directory before the installed 'alembic' package → ModuleNotFoundError.
-# alembic/env.py adds /app/backend to sys.path itself after alembic loads.
-echo "🔄 Running database migrations..."
-export PYTHONPATH=/app/backend:/app
-PYTHONPATH="" alembic -c /app/backend/alembic.ini upgrade head
-echo "✅ Migrations complete"
+# SRE: Alembic migrations are DISABLED for factory reset.
+# Database tables will be created automatically by FastAPI on startup.
+echo "ℹ️  SRE: Database will be created by FastAPI (SQLAlchemy create_all)."
+echo "   Alembic is temporarily bypassed for Enterprise Schema deployment."
 
 # ── Start Celery worker & beat ────────────────────────────────────────────────
 if [ -n "$REDIS_URL" ]; then

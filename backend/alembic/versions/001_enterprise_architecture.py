@@ -12,7 +12,7 @@ from sqlalchemy.engine.reflection import Inspector
 
 # revision identifiers, used by Alembic.
 revision = '001'
-down_revision = '002'
+down_revision = None
 branch_labels = None
 depends_on = None
 

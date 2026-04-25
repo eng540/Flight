@@ -69,7 +69,6 @@ class FlightSessionResponse(FlightSessionBase):
     operator: Optional[DimOperatorResponse] = None
     dep_airport: Optional[DimGeographyResponse] = None
     arr_airport: Optional[DimGeographyResponse] = None
-    # For UI performance, we might include the latest track or all tracks
     tracks: Optional[List[TrackTelemetryBase]] = []
 
 class FlightListResponse(BaseModel):
@@ -80,8 +79,7 @@ class FlightListResponse(BaseModel):
     data: List[FlightSessionResponse]
 
 # ── INGESTION (Internal Use) ────────────────────────────────────────────────
-# This schema is used by the Worker to send flattened data to the CRUD layer,
-# which then splits it into the proper Star Schema tables.
+
 class RawIngestionPayload(BaseModel):
     icao24: str
     callsign: Optional[str] = None
@@ -99,3 +97,63 @@ class RawIngestionPayload(BaseModel):
     est_departure_airport: Optional[str] = None
     est_arrival_airport: Optional[str] = None
     region_key: Optional[str] = "global"
+
+# ── FALLBACK SCHEMAS FOR UI COMPATIBILITY ──────────────────────────────────
+# These schemas prevent the Frontend from crashing during the Enterprise Migration.
+
+class DailyFlightStats(BaseModel):
+    date: str
+    flight_count: int
+
+class AirlineActivityStats(BaseModel):
+    airline_icao24: str
+    airline_name: Optional[str]
+    flight_count: int
+
+class CountryActivityStats(BaseModel):
+    country_name: str
+    flight_count: int
+
+class FlightStatistics(BaseModel):
+    total_flights: int
+    daily_stats: List[DailyFlightStats]
+    top_airlines: List[AirlineActivityStats]
+    top_countries: List[CountryActivityStats]
+    flights_today: int
+    flights_this_week: int
+    flights_this_month: int
+
+class HealthCheck(BaseModel):
+    status: str
+    timestamp: datetime
+    database: str
+    version: str = "3.0.0-Enterprise"
+
+class CountryStats(BaseModel):
+    country_name: str
+    flight_count: int
+
+class DailyStats(BaseModel):
+    date: str
+    flight_count: int
+
+class HourlyStats(BaseModel):
+    hour: int
+    flight_count: int
+
+class AirportStats(BaseModel):
+    airport_icao: str
+    flight_count: int
+    as_departure: int
+    as_arrival: int
+
+class RouteStats(BaseModel):
+    departure: str
+    arrival: str
+    flight_count: int
+
+class AnalyticsSummary(BaseModel):
+    total_flights: int
+    unique_countries: int
+    unique_airports: int
+    top_countries: List[CountryStats]

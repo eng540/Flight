@@ -1,7 +1,7 @@
 """Enterprise Architecture - Drop old tables and create Snowflake Schema
 
 Revision ID: 001
-Revises: 
+Revises: 002
 Create Date: 2026-04-24 00:00:00.000000
 
 """
@@ -11,7 +11,7 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision = '001'
-down_revision = None
+down_revision = 002
 branch_labels = None
 depends_on = None
 

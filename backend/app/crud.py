@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, and_, desc
 from sqlalchemy.exc import IntegrityError
 from typing import List, Optional, Dict, Any, Tuple
-from datetime import datetime
+from datetime import datetime, timezone  # <-- أضفنا timezone هنا
 import logging
 
 from app import models, schemas
@@ -62,7 +62,9 @@ class EnterpriseDataRouter:
                     aircraft_cache[payload.icao24] = aircraft
 
                 # Resolve Session
-                dt_timestamp = datetime.utcfromtimestamp(payload.timestamp)
+                # ----- إصلاح المنطقة الزمنية: استخدام fromtimestamp مع timezone.utc -----
+                dt_timestamp = datetime.fromtimestamp(payload.timestamp, tz=timezone.utc)
+                
                 session = db.query(models.FactFlightSession).filter(
                     models.FactFlightSession.aircraft_id == aircraft.id,
                     models.FactFlightSession.flight_status == "active"
@@ -133,8 +135,6 @@ class FlightQueryCRUD:
     @staticmethod
     def get_active_flights_with_latest_track(db: Session, limit: int = 500) -> Tuple[List[models.FactFlightSession], int]:
         """Returns currently flying aircrafts for the Map UI."""
-        # In a real Time-Series DB, we'd use a Materialized View here.
-        # For now, we query active sessions.
         query = db.query(models.FactFlightSession).options(
             joinedload(models.FactFlightSession.aircraft),
             joinedload(models.FactFlightSession.dep_airport),

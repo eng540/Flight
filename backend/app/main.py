@@ -12,8 +12,6 @@ mimetypes.add_type('image/svg+xml', '.svg')
 
 from app.config import settings
 from app.api import flights, stats, airlines, analytics, ingestion, regions
-# SRE: Import for factory reset
-from app.database import engine, Base
 
 logging.basicConfig(
     level=logging.INFO if not settings.DEBUG else logging.DEBUG,
@@ -25,15 +23,6 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info(f"Starting {settings.APP_NAME} v2")
-    
-    # ── SRE FACTORY RESET ──────────────────────────────────────────
-    logger.warning("SRE: Dropping all legacy tables (if any)...")
-    Base.metadata.drop_all(bind=engine)
-    logger.info("SRE: Creating Enterprise Snowflake Schema from models.py")
-    Base.metadata.create_all(bind=engine)
-    logger.info("SRE: Enterprise database is ready!")
-    # ───────────────────────────────────────────────────────────────
-    
     yield
     logger.info(f"Shutting down {settings.APP_NAME}")
 

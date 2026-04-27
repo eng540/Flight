@@ -1,13 +1,15 @@
-"""Celery tasks – all task definitions must match beat_schedule entries exactly."""
+"""Celery tasks – updated for FR24 Ingestion Service (v5.0).
+
+All task definitions must match beat_schedule entries exactly.
+Active: ingest_recent_geo_task (powered by FR24).
+Other tasks are safely stubbed to prevent Celery errors.
+"""
 from celery import shared_task
 from celery.exceptions import MaxRetriesExceededError, SoftTimeLimitExceeded
 import logging
 import sys
 import os
-import time
 from typing import List, Optional
-
-from sqlalchemy import create_engine, inspect
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'backend'))
 
@@ -18,36 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Global ingestion (no geo filter – legacy, runs every 5 min)
-# ─────────────────────────────────────────────────────────────────────────────
-
-@shared_task(
-    bind=True, max_retries=3, default_retry_delay=60,
-    soft_time_limit=300, time_limit=600,
-    name="worker.tasks.ingest_flights_task",
-    queue="ingestion",
-)
-def ingest_flights_task(self, hours: int = 2):
-    """Ingest recent global flights (no geo filter)."""
-    try:
-        logger.info(f"[global] Starting ingestion for last {hours} hours")
-        with FlightIngestionService() as svc:
-            stats = svc.ingest_recent_flights(hours)
-        logger.info(f"[global] Done: {stats}")
-        return {"status": "success", "stats": stats}
-    except SoftTimeLimitExceeded:
-        logger.warning("[global] Task timed out")
-        return {"status": "timeout"}
-    except Exception as exc:
-        logger.error(f"[global] Failed: {exc}", exc_info=True)
-        try:
-            self.retry(exc=exc)
-        except MaxRetriesExceededError:
-            return {"status": "failed", "error": str(exc)}
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Geo-filtered periodic ingestion (SRE Production: AirLabs ONLY)
+# 1. LIVE RADAR – THE ACTIVE TASK (FR24 Tier 1)
 # ─────────────────────────────────────────────────────────────────────────────
 
 @shared_task(
@@ -58,48 +31,26 @@ def ingest_flights_task(self, hours: int = 2):
 )
 def ingest_recent_geo_task(self, region_keys: Optional[List[str]] = None,
                             lookback_hours: int = 2):
-    """
-    SRE Production: Ingest real-time flights & routes exclusively from AirLabs.
-    This is the PRIMARY source for live radar data.
-    """
-    # ── SRE GUARD: Wait until database tables are ready ──────────────────
-    engine = create_engine(settings.DATABASE_URL)
-    inspector = inspect(engine)
-    for attempt in range(30):  # up to 30 * 2 = 60 seconds
-        if 'dim_geography' in inspector.get_table_names():
-            logger.info("Database tables are ready. Starting ingestion...")
-            break
-        logger.warning(f"Waiting for database tables... attempt {attempt+1}/30")
-        time.sleep(2)
-    else:
-        logger.error("Database tables not ready after 60s. Aborting ingestion.")
-        return {'status': 'error', 'message': 'Tables not ready'}
-    # ──────────────────────────────────────────────────────────────────────
-
+    """SRE Production: FR24 Global Aggregation"""
     try:
-        # Get active regions (all or specified ones)
         active_keys = region_keys or settings.get_active_region_keys()
         regions = [r for r in (settings.get_region(k) for k in active_keys) if r]
         
         if not regions:
-            logger.warning("[AirLabs] No valid regions configured")
             return {"status": "skipped", "reason": "no regions"}
 
-        # Initialize ingestion service
         svc = FlightIngestionService()
-        logger.info(f"[AirLabs Master] Running real-time ingestion for {[r.key for r in regions]}")
+        logger.info(f"[FR24 Task] Starting live sweep for {[r.key for r in regions]}")
         
-        # Call our NEW and ONLY source for live radar
-        final_result = svc.ingest_from_airlabs(regions)
+        final_result = svc.ingest_live_radar_from_fr24(regions)
 
-        logger.info(f"[AirLabs Master] Ingestion completed: {final_result}")
+        logger.info(f"[FR24 Task] Sweep Complete: {final_result}")
         return {"status": "success", "result": final_result}
         
     except SoftTimeLimitExceeded:
-        logger.warning("[AirLabs] Task timed out")
         return {"status": "timeout"}
     except Exception as exc:
-        logger.error(f"[AirLabs Master] Critical failure: {exc}", exc_info=True)
+        logger.error(f"[FR24 Task] Failed: {exc}", exc_info=True)
         try:
             self.retry(exc=exc)
         except MaxRetriesExceededError:
@@ -107,8 +58,20 @@ def ingest_recent_geo_task(self, region_keys: Optional[List[str]] = None,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Historical ingestion (one-off, chunked, idempotent)
+# 2. STUBBED / LEGACY TASKS (safely disabled to avoid crashes)
 # ─────────────────────────────────────────────────────────────────────────────
+
+@shared_task(
+    bind=True, max_retries=3, default_retry_delay=60,
+    soft_time_limit=300, time_limit=600,
+    name="worker.tasks.ingest_flights_task",
+    queue="ingestion",
+)
+def ingest_flights_task(self, hours: int = 2):
+    """LEGACY STUB: Global flight ingestion (no geo filter)."""
+    logger.warning("[global] This task is currently disabled (FR24 migration).")
+    return {"status": "skipped", "reason": "disabled_during_fr24_migration"}
+
 
 @shared_task(
     bind=True, max_retries=2, default_retry_delay=120,
@@ -119,49 +82,10 @@ def ingest_recent_geo_task(self, region_keys: Optional[List[str]] = None,
 def ingest_historical_flights(self, begin_date: str, end_date: str,
                                region_keys: List[str],
                                force_reingest: bool = False):
-    """
-    Ingest historical flights for a date range and list of regions.
-    Each (date × region) is tracked as an IngestionJob – skipped if completed.
-    """
-    from datetime import datetime, timedelta
+    """LEGACY STUB: Historical flight ingestion."""
+    logger.warning("[historical] This task is currently disabled (FR24 migration).")
+    return {"status": "skipped", "reason": "disabled_during_fr24_migration"}
 
-    logger.info(f"[historical] {begin_date}→{end_date} regions={region_keys} force={force_reingest}")
-
-    try:
-        begin_ts = int(datetime.strptime(begin_date, "%Y-%m-%d").timestamp())
-        end_ts   = int((datetime.strptime(end_date, "%Y-%m-%d")
-                        + timedelta(days=1)).timestamp()) - 1
-    except ValueError as e:
-        return {"status": "failed", "error": f"Invalid date: {e}"}
-
-    regions = [r for r in (settings.get_region(k) for k in region_keys) if r]
-    if not regions:
-        return {"status": "failed", "error": "No valid regions"}
-
-    totals = {"jobs_processed": 0, "jobs_skipped": 0,
-              "flights_created": 0, "flights_updated": 0}
-    svc = FlightIngestionService()
-    try:
-        for region in regions:
-            result = svc.ingest_date_range_for_region(
-                begin_ts=begin_ts, end_ts=end_ts,
-                region=region, force_reingest=force_reingest)
-            for k in totals:
-                totals[k] += result.get(k, 0)
-    except Exception as exc:
-        logger.error(f"[historical] Failed: {exc}", exc_info=True)
-        try:
-            self.retry(exc=exc)
-        except MaxRetriesExceededError:
-            return {"status": "failed", "error": str(exc)}
-
-    logger.info(f"[historical] Completed: {totals}")
-    return {"status": "success", **totals}
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Cleanup (runs daily)
-# ─────────────────────────────────────────────────────────────────────────────
 
 @shared_task(
     bind=True, max_retries=3, default_retry_delay=60,
@@ -169,27 +93,10 @@ def ingest_historical_flights(self, begin_date: str, end_date: str,
     queue="maintenance",
 )
 def cleanup_old_data_task(self, days: int = 0):
-    """Remove flights older than `days`. 0 = respect DATA_RETENTION_DAYS env (default keep all)."""
-    retention = settings.DATA_RETENTION_DAYS if days == 0 else days
-    if not retention or retention <= 0:
-        logger.info("[cleanup] DATA_RETENTION_DAYS=0 – keeping all data")
-        return {"status": "skipped", "deleted": 0}
-    try:
-        with FlightIngestionService() as svc:
-            deleted = svc.cleanup_old_data(retention)
-        logger.info(f"[cleanup] Deleted {deleted} flights older than {retention} days")
-        return {"status": "success", "deleted": deleted}
-    except Exception as exc:
-        logger.error(f"[cleanup] Failed: {exc}")
-        try:
-            self.retry(exc=exc)
-        except MaxRetriesExceededError:
-            return {"status": "failed", "error": str(exc)}
+    """LEGACY STUB: Cleanup old flights."""
+    logger.warning("[cleanup] This task is currently disabled (FR24 migration).")
+    return {"status": "skipped", "reason": "disabled_during_fr24_migration"}
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Legacy stubs – prevents "unregistered task" errors in beat logs
-# ─────────────────────────────────────────────────────────────────────────────
 
 @shared_task(
     bind=True,
@@ -197,20 +104,17 @@ def cleanup_old_data_task(self, days: int = 0):
     queue="ingestion",
 )
 def run_realtime_radar_task(self):
-    """Legacy stub – kept to prevent beat 'unregistered task' errors."""
-    logger.info("[realtime] Legacy task called – no action")
-    return {"status": "skipped", "reason": "legacy task"}
+    """LEGACY STUB: Previously used for AirLabs realtime radar."""
+    logger.info("[realtime] Legacy realtime task called – no action (FR24 now active).")
+    return {"status": "skipped", "reason": "replaced_by_fr24"}
 
 
 @shared_task(
     bind=True,
-    name="worker.tasks.ingest_aviationstack_task", 
+    name="worker.tasks.ingest_aviationstack_task",
     queue="ingestion",
 )
 def ingest_aviationstack_task(self):
-    """
-    LEGACY STUB: AviationStack has been replaced by AirLabs.
-    This task remains only to prevent Celery beat errors during migration.
-    """
-    logger.warning("[AviationStack] This task is DEPRECATED. Use AirLabs instead.")
-    return {"status": "skipped", "reason": "replaced_by_airlabs", "provider": "AirLabs"}
+    """LEGACY STUB: AviationStack has been completely deprecated."""
+    logger.warning("[AviationStack] DEPRECATED. FR24 is now the only live source.")
+    return {"status": "skipped", "reason": "deprecated"}

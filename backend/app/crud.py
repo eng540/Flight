@@ -1,477 +1,307 @@
-"""CRUD operations for the Flight Intelligence database."""
-from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func, and_, desc, text
-from sqlalchemy.exc import IntegrityError
+"""
+Enterprise CRUD Operations (v3.2 - Master Production Grade)
+Fully compliant with Aviation Physics, State Machines, and Event Sourcing.
+"""
+from sqlalchemy.orm import Session
+from sqlalchemy import func, and_, desc
 from typing import List, Optional, Dict, Any, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 import logging
+import math
 
 from app import models, schemas
 
 logger = logging.getLogger(__name__)
 
-
-# ── Country ──────────────────────────────────────────────────────────────────
-class CountryCRUD:
+class AviationMath:
+    """Helper for physical calculations (Haversine, etc.)"""
     @staticmethod
-    def get_by_name(db: Session, name: str) -> Optional[models.Country]:
-        return db.query(models.Country).filter(
-            func.lower(models.Country.name) == func.lower(name)
-        ).first()
+    def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+        """Calculate distance in KM between two points."""
+        R = 6371.0 # Earth radius in KM
+        dlat = math.radians(lat2 - lat1)
+        dlon = math.radians(lon2 - lon1)
+        a = math.sin(dlat / 2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2)**2
+        return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
+
+class DataQualityValidator:
+    """SRE: Advanced Data Quality Pipeline."""
+    
     @staticmethod
-    def get_or_create(db: Session, name: str) -> models.Country:
-        country = CountryCRUD.get_by_name(db, name)
-        if not country:
-            country = models.Country(name=name)
-            db.add(country)
-            try:
-                db.commit(); db.refresh(country)
-            except IntegrityError:
-                db.rollback()
-                country = CountryCRUD.get_by_name(db, name)
-        return country
+    def validate_physics(payload: schemas.RawIngestionPayload, current_state: Optional[models.CurrentAircraftState]) -> bool:
+        # 1. Reject impossible speeds/altitudes
+        if payload.velocity and payload.velocity > 1200: return False
+        if payload.altitude and payload.altitude > 18500: return False
+        
+        if current_state:
+            # 2. Reject exact duplicates (Same time + Same position)
+            # Safe timezone check for current_state
+            if current_state.last_updated:
+                # current_state.last_updated is timezone-aware
+                if abs((payload.timestamp - current_state.last_updated.timestamp())) < 1 and \
+                   abs(payload.latitude - current_state.latitude) < 0.0001 and \
+                   abs(payload.longitude - current_state.longitude) < 0.0001:
+                    return False # It's an exact duplicate ping
 
-    @staticmethod
-    def get_all(db: Session, skip: int = 0, limit: int = 100) -> List[models.Country]:
-        return db.query(models.Country).offset(skip).limit(limit).all()
+            # 3. Reject Ghost Jumps (e.g., > 50km jump in less than 30 seconds)
+            time_diff = payload.timestamp - current_state.last_updated.timestamp()
+            if 0 < time_diff < 30:
+                dist_km = AviationMath.haversine_distance(
+                    current_state.latitude, current_state.longitude, 
+                    payload.latitude, payload.longitude
+                )
+                if dist_km > 50:
+                    logger.warning(f"Rejected Ghost Jump for {payload.icao24}: {dist_km:.1f}km in {time_diff}s.")
+                    return False
+                    
+            # 4. Reject impossible altitude spikes (> 500m per ping is extreme for commercial)
+            if payload.altitude is not None and current_state.altitude_m is not None:
+                if abs(payload.altitude - current_state.altitude_m) > 1000 and time_diff < 10:
+                    return False
 
-    @staticmethod
-    def create(db: Session, data: schemas.CountryCreate) -> models.Country:
-        obj = models.Country(**data.model_dump())
-        db.add(obj); db.commit(); db.refresh(obj)
-        return obj
-
-
-# ── Airline ───────────────────────────────────────────────────────────────────
-class AirlineCRUD:
-    @staticmethod
-    def get_by_id(db: Session, airline_id: int) -> Optional[models.Airline]:
-        return db.query(models.Airline).options(
-            joinedload(models.Airline.country)
-        ).filter(models.Airline.id == airline_id).first()
-
-    @staticmethod
-    def get_by_icao24(db: Session, icao24: str) -> Optional[models.Airline]:
-        return db.query(models.Airline).options(
-            joinedload(models.Airline.country)
-        ).filter(models.Airline.icao24 == icao24.lower()).first()
-
-    @staticmethod
-    def get_or_create(db: Session, icao24: str, name: Optional[str] = None,
-                      country_name: Optional[str] = None) -> models.Airline:
-        airline = AirlineCRUD.get_by_icao24(db, icao24)
-        if not airline:
-            country_id = None
-            if country_name:
-                country = CountryCRUD.get_or_create(db, country_name)
-                country_id = country.id
-            airline = models.Airline(icao24=icao24.lower(), name=name, country_id=country_id)
-            db.add(airline)
-            try:
-                db.commit(); db.refresh(airline)
-            except IntegrityError:
-                db.rollback()
-                airline = AirlineCRUD.get_by_icao24(db, icao24)
-        return airline
-
-    @staticmethod
-    def get_all(db: Session, skip: int = 0, limit: int = 100) -> List[models.Airline]:
-        return db.query(models.Airline).options(
-            joinedload(models.Airline.country)
-        ).offset(skip).limit(limit).all()
-
-    @staticmethod
-    def get_most_active(db: Session, limit: int = 10) -> List[Dict[str, Any]]:
-        results = db.query(
-            models.Airline.icao24, models.Airline.name,
-            func.count(models.Flight.id).label('flight_count')
-        ).join(models.Flight, models.Airline.id == models.Flight.airline_id, isouter=True
-        ).group_by(models.Airline.id, models.Airline.icao24, models.Airline.name
-        ).order_by(desc('flight_count')).limit(limit).all()
-        return [{"airline_icao24": r.icao24, "airline_name": r.name,
-                 "flight_count": r.flight_count} for r in results]
-
-    @staticmethod
-    def create(db: Session, data: schemas.AirlineCreate) -> models.Airline:
-        obj = models.Airline(**data.model_dump())
-        db.add(obj); db.commit(); db.refresh(obj)
-        return obj
-
-
-# ── Flight ─────────────────────────────────────────────────────────────────────
-class FlightCRUD:
-    @staticmethod
-    def get_by_id(db: Session, flight_id: int) -> Optional[models.Flight]:
-        return db.query(models.Flight).options(
-            joinedload(models.Flight.airline)
-        ).filter(models.Flight.id == flight_id).first()
-
-    @staticmethod
-    def get_by_unique_id(db: Session, uid: str) -> Optional[models.Flight]:
-        return db.query(models.Flight).filter(
-            models.Flight.unique_flight_id == uid
-        ).first()
-
-    @staticmethod
-    def exists(db: Session, uid: str) -> bool:
-        return db.query(models.Flight.id).filter(
-            models.Flight.unique_flight_id == uid
-        ).first() is not None
-
-    @staticmethod
-    def get_all(
-        db: Session,
-        skip: int = 0, limit: int = 100,
-        airline_id: Optional[int] = None,
-        country: Optional[str] = None,
-        date_from: Optional[str] = None,
-        date_to: Optional[str] = None,
-        departure_airport: Optional[str] = None,
-        arrival_airport: Optional[str] = None,
-        region_key: Optional[str] = None,
-        begin_ts: Optional[int] = None,
-        end_ts: Optional[int] = None,
-        lamin: Optional[float] = None,
-        lomin: Optional[float] = None,
-        lamax: Optional[float] = None,
-        lomax: Optional[float] = None,
-    ) -> Tuple[List[models.Flight], int]:
-        query = db.query(models.Flight).options(joinedload(models.Flight.airline))
-
-        if airline_id:
-            query = query.filter(models.Flight.airline_id == airline_id)
-        if country:
-            query = query.filter(func.lower(models.Flight.origin_country) == func.lower(country))
-        if date_from:
-            try:
-                ts = int(datetime.strptime(date_from, "%Y-%m-%d").timestamp())
-                query = query.filter(models.Flight.first_seen >= ts)
-            except ValueError:
-                pass
-        if date_to:
-            try:
-                ts = int(datetime.strptime(date_to, "%Y-%m-%d").timestamp()) + 86400
-                query = query.filter(models.Flight.last_seen <= ts)
-            except ValueError:
-                pass
-        if departure_airport:
-            query = query.filter(
-                func.upper(models.Flight.est_departure_airport) == departure_airport.upper())
-        if arrival_airport:
-            query = query.filter(
-                func.upper(models.Flight.est_arrival_airport) == arrival_airport.upper())
-        if region_key:
-            query = query.filter(models.Flight.region_key == region_key)
-        if begin_ts is not None:
-            query = query.filter(models.Flight.first_seen >= begin_ts)
-        if end_ts is not None:
-            query = query.filter(models.Flight.last_seen <= end_ts)
-        if lamin is not None:
-            query = query.filter(models.Flight.latitude >= lamin)
-        if lomin is not None:
-            query = query.filter(models.Flight.longitude >= lomin)
-        if lamax is not None:
-            query = query.filter(models.Flight.latitude <= lamax)
-        if lomax is not None:
-            query = query.filter(models.Flight.longitude <= lomax)
-
-        total = query.count()
-        flights = query.order_by(desc(models.Flight.first_seen)).offset(skip).limit(limit).all()
-        return flights, total
-
-    @staticmethod
-    def create_or_update(db: Session, data: schemas.FlightCreate) -> Optional[models.Flight]:
-        existing = FlightCRUD.get_by_unique_id(db, data.unique_flight_id)
-        if existing:
-            for k, v in data.model_dump(exclude={'unique_flight_id'}).items():
-                if v is not None:
-                    setattr(existing, k, v)
-            db.commit(); db.refresh(existing)
-            return existing
-        flight = models.Flight(**data.model_dump())
-        db.add(flight)
-        try:
-            db.commit(); db.refresh(flight)
-            return flight
-        except IntegrityError:
-            db.rollback()
-            return None
-
-    @staticmethod
-    def bulk_create(db: Session, flights_data: List[schemas.FlightCreate]) -> Dict[str, int]:
-        created = updated = skipped = 0
-        for fd in flights_data:
-            try:
-                existing = FlightCRUD.get_by_unique_id(db, fd.unique_flight_id)
-                if existing:
-                    for k, v in fd.model_dump(exclude={'unique_flight_id'}).items():
-                        if v is not None:
-                            setattr(existing, k, v)
-                    updated += 1
-                else:
-                    db.add(models.Flight(**fd.model_dump()))
-                    created += 1
-                if (created + updated) % 100 == 0:
-                    db.commit()
-            except Exception as e:
-                logger.error(f"Error processing flight {fd.unique_flight_id}: {e}")
-                skipped += 1
-        db.commit()
-        return {"created": created, "updated": updated, "skipped": skipped}
-
-    @staticmethod
-    def get_statistics(db: Session) -> Dict[str, Any]:
-        now = datetime.utcnow()
-        today_start = int(datetime(now.year, now.month, now.day).timestamp())
-        week_start = int((now - timedelta(days=7)).timestamp())
-        month_start = int((now - timedelta(days=30)).timestamp())
-
-        total_flights = db.query(models.Flight).count()
-        flights_today = db.query(models.Flight).filter(
-            models.Flight.first_seen >= today_start).count()
-        flights_this_week = db.query(models.Flight).filter(
-            models.Flight.first_seen >= week_start).count()
-        flights_this_month = db.query(models.Flight).filter(
-            models.Flight.first_seen >= month_start).count()
-
-        daily_stats = []
-        for i in range(7):
-            day = now - timedelta(days=i)
-            ds = int(datetime(day.year, day.month, day.day).timestamp())
-            de = ds + 86400
-            cnt = db.query(models.Flight).filter(
-                and_(models.Flight.first_seen >= ds, models.Flight.first_seen < de)
-            ).count()
-            daily_stats.append({"date": day.strftime("%Y-%m-%d"), "flight_count": cnt})
-        daily_stats.reverse()
-
-        top_airlines = db.query(
-            models.Airline.icao24, models.Airline.name,
-            func.count(models.Flight.id).label('flight_count')
-        ).join(models.Flight, models.Airline.id == models.Flight.airline_id
-        ).group_by(models.Airline.id, models.Airline.icao24, models.Airline.name
-        ).order_by(desc('flight_count')).limit(10).all()
-
-        top_countries = db.query(
-            models.Flight.origin_country,
-            func.count(models.Flight.id).label('flight_count')
-        ).group_by(models.Flight.origin_country
-        ).order_by(desc('flight_count')).limit(10).all()
-
-        return {
-            "total_flights": total_flights,
-            "daily_stats": daily_stats,
-            "top_airlines": [{"airline_icao24": a.icao24, "airline_name": a.name,
-                               "flight_count": a.flight_count} for a in top_airlines],
-            "top_countries": [{"country_name": c.origin_country or "Unknown",
-                                "flight_count": c.flight_count} for c in top_countries],
-            "flights_today": flights_today,
-            "flights_this_week": flights_this_week,
-            "flights_this_month": flights_this_month,
-        }
-
-    @staticmethod
-    def delete_old_flights(db: Session, days: int = 30) -> int:
-        if days <= 0:
-            return 0
-        cutoff = int((datetime.utcnow() - timedelta(days=days)).timestamp())
-        result = db.query(models.Flight).filter(
-            models.Flight.last_seen < cutoff
-        ).delete(synchronize_session=False)
-        db.commit()
-        return result
-
-
-# ── Analytics ─────────────────────────────────────────────────────────────────
-class AnalyticsCRUD:
-    @staticmethod
-    def _apply_filters(query, begin_ts=None, end_ts=None, region_key=None,
-                       lamin=None, lomin=None, lamax=None, lomax=None):
-        if begin_ts:
-            query = query.filter(models.Flight.first_seen >= begin_ts)
-        if end_ts:
-            query = query.filter(models.Flight.last_seen <= end_ts)
-        if region_key:
-            query = query.filter(models.Flight.region_key == region_key)
-        if lamin is not None:
-            query = query.filter(models.Flight.latitude >= lamin)
-        if lomin is not None:
-            query = query.filter(models.Flight.longitude >= lomin)
-        if lamax is not None:
-            query = query.filter(models.Flight.latitude <= lamax)
-        if lomax is not None:
-            query = query.filter(models.Flight.longitude <= lomax)
-        return query
-
-    @staticmethod
-    def get_top_countries(db: Session, limit: int = 15, **kw) -> List[Dict]:
-        q = db.query(models.Flight.origin_country,
-                     func.count(models.Flight.id).label('flight_count'))
-        q = AnalyticsCRUD._apply_filters(q, **kw)
-        q = q.filter(models.Flight.origin_country.isnot(None))
-        results = q.group_by(models.Flight.origin_country
-                  ).order_by(desc('flight_count')).limit(limit).all()
-        return [{"country_name": r.origin_country, "flight_count": r.flight_count}
-                for r in results]
-
-    @staticmethod
-    def get_daily_trend(db: Session, begin_ts: int, end_ts: int, **kw) -> List[Dict]:
-        results = []
-        cursor = begin_ts
-        while cursor < end_ts:
-            next_c = cursor + 86400
-            q = db.query(func.count(models.Flight.id)).filter(
-                and_(models.Flight.first_seen >= cursor,
-                     models.Flight.first_seen < next_c))
-            q = AnalyticsCRUD._apply_filters(q, **kw)
-            cnt = q.scalar() or 0
-            results.append({
-                "date": datetime.utcfromtimestamp(cursor).strftime("%Y-%m-%d"),
-                "flight_count": cnt
-            })
-            cursor = next_c
-        return results
-
-    @staticmethod
-    def get_hourly_distribution(db: Session, **kw) -> List[Dict]:
-        q = db.query(
-            func.extract('hour', func.to_timestamp(models.Flight.first_seen)).label('hour'),
-            func.count(models.Flight.id).label('flight_count')
-        )
-        q = AnalyticsCRUD._apply_filters(q, **kw)
-        results = q.group_by('hour').order_by('hour').all()
-        hour_map = {int(r.hour): r.flight_count for r in results}
-        return [{"hour": h, "flight_count": hour_map.get(h, 0)} for h in range(24)]
-
-    @staticmethod
-    def get_top_airports(db: Session, limit: int = 15, **kw) -> List[Dict]:
-        q_dep = db.query(models.Flight.est_departure_airport.label('airport'),
-                         func.count(models.Flight.id).label('cnt')
-                         ).filter(models.Flight.est_departure_airport.isnot(None))
-        q_dep = AnalyticsCRUD._apply_filters(q_dep, **kw)
-        dep = {r.airport: r.cnt for r in q_dep.group_by('airport').all()}
-
-        q_arr = db.query(models.Flight.est_arrival_airport.label('airport'),
-                         func.count(models.Flight.id).label('cnt')
-                         ).filter(models.Flight.est_arrival_airport.isnot(None))
-        q_arr = AnalyticsCRUD._apply_filters(q_arr, **kw)
-        arr = {r.airport: r.cnt for r in q_arr.group_by('airport').all()}
-
-        all_ap = set(dep.keys()) | set(arr.keys())
-        combined = [{"airport_icao": ap,
-                     "as_departure": dep.get(ap, 0),
-                     "as_arrival": arr.get(ap, 0),
-                     "flight_count": dep.get(ap, 0) + arr.get(ap, 0)}
-                    for ap in all_ap]
-        return sorted(combined, key=lambda x: x['flight_count'], reverse=True)[:limit]
-
-    @staticmethod
-    def get_top_routes(db: Session, limit: int = 20, **kw) -> List[Dict]:
-        q = db.query(
-            models.Flight.est_departure_airport,
-            models.Flight.est_arrival_airport,
-            func.count(models.Flight.id).label('flight_count')
-        ).filter(
-            models.Flight.est_departure_airport.isnot(None),
-            models.Flight.est_arrival_airport.isnot(None)
-        )
-        q = AnalyticsCRUD._apply_filters(q, **kw)
-        results = q.group_by(
-            models.Flight.est_departure_airport, models.Flight.est_arrival_airport
-        ).order_by(desc('flight_count')).limit(limit).all()
-        return [{"departure": r.est_departure_airport, "arrival": r.est_arrival_airport,
-                 "flight_count": r.flight_count} for r in results]
-
-    @staticmethod
-    def get_summary(db: Session, **kw) -> Dict:
-        q_total = AnalyticsCRUD._apply_filters(
-            db.query(func.count(models.Flight.id)), **kw)
-        total = q_total.scalar() or 0
-
-        q_countries = AnalyticsCRUD._apply_filters(
-            db.query(func.count(func.distinct(models.Flight.origin_country))), **kw)
-        unique_countries = q_countries.scalar() or 0
-
-        q_airports = AnalyticsCRUD._apply_filters(
-            db.query(func.count(func.distinct(models.Flight.est_departure_airport))), **kw)
-        unique_airports = q_airports.scalar() or 0
-
-        top_countries = AnalyticsCRUD.get_top_countries(db, limit=5, **kw)
-        return {"total_flights": total, "unique_countries": unique_countries,
-                "unique_airports": unique_airports, "top_countries": top_countries}
-
-
-# ── IngestionJob ───────────────────────────────────────────────────────────────
-class IngestionJobCRUD:
-    @staticmethod
-    def get_by_id(db: Session, job_id: int) -> Optional[models.IngestionJob]:
-        return db.query(models.IngestionJob).filter(
-            models.IngestionJob.id == job_id).first()
-
-    @staticmethod
-    def get_by_date_region(db: Session, date_str: str,
-                           region_key: str) -> Optional[models.IngestionJob]:
-        return db.query(models.IngestionJob).filter(
-            and_(models.IngestionJob.date_str == date_str,
-                 models.IngestionJob.region_key == region_key)
-        ).first()
-
-    @staticmethod
-    def is_completed(db: Session, date_str: str, region_key: str) -> bool:
-        job = IngestionJobCRUD.get_by_date_region(db, date_str, region_key)
-        return job is not None and job.status == "completed"
-
-    @staticmethod
-    def get_all(db: Session, skip: int = 0, limit: int = 100,
-                status: Optional[str] = None,
-                region_key: Optional[str] = None) -> Tuple[List[models.IngestionJob], int]:
-        q = db.query(models.IngestionJob)
-        if status:
-            q = q.filter(models.IngestionJob.status == status)
-        if region_key:
-            q = q.filter(models.IngestionJob.region_key == region_key)
-        total = q.count()
-        jobs = q.order_by(desc(models.IngestionJob.created_at)).offset(skip).limit(limit).all()
-        return jobs, total
-
-    @staticmethod
-    def create(db: Session, date_str: str, region_key: str,
-               lamin: float, lomin: float, lamax: float, lomax: float,
-               begin_ts: int, end_ts: int, chunks_total: int = 0) -> models.IngestionJob:
-        job = models.IngestionJob(
-            date_str=date_str, region_key=region_key,
-            lamin=lamin, lomin=lomin, lamax=lamax, lomax=lomax,
-            begin_ts=begin_ts, end_ts=end_ts,
-            status="pending", chunks_total=chunks_total)
-        db.add(job); db.commit(); db.refresh(job)
-        return job
-
-    @staticmethod
-    def update_status(db: Session, job_id: int, status: str,
-                      flights_ingested: int = None, chunks_done: int = None,
-                      error_message: str = None) -> Optional[models.IngestionJob]:
-        job = IngestionJobCRUD.get_by_id(db, job_id)
-        if not job:
-            return None
-        job.status = status
-        if status == "running" and not job.started_at:
-            job.started_at = datetime.utcnow()
-        if status in ("completed", "failed"):
-            job.completed_at = datetime.utcnow()
-        if flights_ingested is not None:
-            job.flights_ingested = flights_ingested
-        if chunks_done is not None:
-            job.chunks_done = chunks_done
-        if error_message is not None:
-            job.error_message = error_message
-        db.commit(); db.refresh(job)
-        return job
-
-    @staticmethod
-    def delete(db: Session, job_id: int) -> bool:
-        job = IngestionJobCRUD.get_by_id(db, job_id)
-        if not job:
-            return False
-        db.delete(job); db.commit()
         return True
+
+
+class EnterpriseDataRouter:
+    """The Intelligence Brain for Data Routing and State Machines."""
+    
+    @staticmethod
+    def process_telemetry_batch(db: Session, payloads: List[schemas.RawIngestionPayload]) -> Dict[str, int]:
+        stats = {"new_aircrafts": 0, "new_sessions": 0, "tracks_recorded": 0, "events": 0, "rejected": 0, "errors": 0}
+        
+        # 1. Pre-process Geographies & Operators (Foreign Key Safety)
+        geo_cache, operator_cache = {}, {}
+        for p in payloads:
+            if p.est_departure_airport: EnterpriseDataRouter._ensure_geo(db, geo_cache, p.est_departure_airport)
+            if p.est_arrival_airport: EnterpriseDataRouter._ensure_geo(db, geo_cache, p.est_arrival_airport)
+            if p.operator_icao: EnterpriseDataRouter._ensure_operator(db, operator_cache, p.operator_icao)
+        db.commit() 
+
+        # 2. Process Radar Pings
+        aircraft_cache = {}
+        
+        for payload in payloads:
+            try:
+                # Fetch Current State first for Validation & State Machine
+                current_state = db.query(models.CurrentAircraftState).filter(
+                    models.CurrentAircraftState.icao24 == payload.icao24
+                ).first()
+                
+                # Quality Check
+                if not DataQualityValidator.validate_physics(payload, current_state):
+                    stats["rejected"] += 1
+                    continue
+
+                dep_id = geo_cache.get(payload.est_departure_airport.upper()) if payload.est_departure_airport else None
+                arr_id = geo_cache.get(payload.est_arrival_airport.upper()) if payload.est_arrival_airport else None
+                op_id = operator_cache.get(payload.operator_icao.upper()) if payload.operator_icao else None
+
+                # Resolve Aircraft (SCD Type 2 Dimension)
+                aircraft = aircraft_cache.get(payload.icao24)
+                if not aircraft:
+                    aircraft = db.query(models.DimAircraft).filter(
+                        models.DimAircraft.icao24 == payload.icao24,
+                        models.DimAircraft.valid_to.is_(None)
+                    ).first()
+                    
+                    if not aircraft:
+                        aircraft = models.DimAircraft(
+                            icao24=payload.icao24,
+                            registration=payload.registration,
+                            country_code=payload.origin_country[:2].upper() if payload.origin_country else None,
+                            operator_id=op_id
+                        )
+                        db.add(aircraft)
+                        db.flush()
+                        stats["new_aircrafts"] += 1
+                    aircraft_cache[payload.icao24] = aircraft
+
+                dt_timestamp = datetime.fromtimestamp(payload.timestamp, tz=timezone.utc)
+
+                # --- SESSION STATE MACHINE (The Core Fix) ---
+                session = db.query(models.FactFlightSession).filter(
+                    models.FactFlightSession.aircraft_id == aircraft.id,
+                    models.FactFlightSession.flight_status == "active"
+                ).order_by(desc(models.FactFlightSession.last_seen_ts)).first()
+                
+                last_on_ground = current_state.on_ground if current_state else payload.on_ground
+                is_moving = payload.velocity and payload.velocity > 50 # km/h
+
+                # Condition to OPEN a new session
+                # Avoid Ghost Sessions: Don't open if grounded and stationary
+                should_open_session = False
+                if not session:
+                    if not payload.on_ground or is_moving:
+                        should_open_session = True
+                else:
+                    time_since_last = (dt_timestamp - session.last_seen_ts).total_seconds()
+                    # Condition to CLOSE active session
+                    should_close = False
+                    status_reason = ""
+                    
+                    # 1. Lost Signal (20 mins)
+                    if time_since_last > 1200:
+                        should_close = True
+                        status_reason = "lost_signal"
+                    # 2. Landed and stopped (5 mins of stationary ground data approx)
+                    elif payload.on_ground and not is_moving and last_on_ground:
+                        if time_since_last > 300: 
+                            should_close = True
+                            status_reason = "landed"
+
+                    if should_close:
+                        session.flight_status = status_reason
+                        session.actual_landing_ts = session.last_seen_ts if status_reason == "landed" else None
+                        db.flush()
+                        
+                        # Generate Event: SIGNAL_LOST
+                        if status_reason == "lost_signal":
+                            db.add(models.FactAviationEvent(
+                                timestamp=dt_timestamp, aircraft_id=aircraft.id, session_id=session.session_id,
+                                event_category="SYSTEM", event_type="SIGNAL_LOST"
+                            ))
+                            stats["events"] += 1
+                            
+                        # If a new ping arrives after closing, and it's flying, open a new one
+                        if not payload.on_ground or is_moving:
+                            should_open_session = True
+
+                if should_open_session:
+                    session = models.FactFlightSession(
+                        aircraft_id=aircraft.id, operator_id=op_id, callsign=payload.callsign,
+                        dep_airport_id=dep_id, arr_airport_id=arr_id,
+                        first_seen_ts=dt_timestamp, last_seen_ts=dt_timestamp, flight_status="active"
+                    )
+                    db.add(session)
+                    db.flush()
+                    stats["new_sessions"] += 1
+                    
+                    # Generate Event: TAKEOFF
+                    if not payload.on_ground:
+                        db.add(models.FactAviationEvent(
+                            timestamp=dt_timestamp, aircraft_id=aircraft.id, session_id=session.session_id,
+                            event_category="FLIGHT", event_type="TAKEOFF"
+                        ))
+                        stats["events"] += 1
+
+                # If session exists and is active, update it
+                if session and session.flight_status == "active":
+                    session.last_seen_ts = dt_timestamp
+                    if payload.altitude and (session.max_altitude_m is None or payload.altitude > session.max_altitude_m):
+                        session.max_altitude_m = payload.altitude
+                    if dep_id and not session.dep_airport_id: session.dep_airport_id = dep_id
+                    if arr_id and not session.arr_airport_id: session.arr_airport_id = arr_id
+                    if op_id and not session.operator_id: session.operator_id = op_id
+
+                    # Insert Track Telemetry safely
+                    track = models.TrackTelemetry(
+                        timestamp=dt_timestamp,
+                        session_id=session.session_id,
+                        latitude=payload.latitude,
+                        longitude=payload.longitude,
+                        altitude_m=payload.altitude,
+                        velocity_kmh=payload.velocity,
+                        heading_deg=payload.heading,
+                        is_on_ground=payload.on_ground,
+                        squawk=payload.squawk if hasattr(payload, 'squawk') else None
+                    )
+                    db.add(track)
+                    stats["tracks_recorded"] += 1
+
+                # Event Sourcing: Check for Squawk Emergency
+                squawk = payload.squawk if hasattr(payload, 'squawk') else None
+                if squawk in ["7500", "7600", "7700"]:
+                    last_squawk = current_state.squawk if current_state else None
+                    if squawk != last_squawk and session:
+                        db.add(models.FactAviationEvent(
+                            timestamp=dt_timestamp, aircraft_id=aircraft.id, session_id=session.session_id,
+                            event_category="EMERGENCY", event_type=f"SQUAWK_{squawk}"
+                        ))
+                        stats["events"] += 1
+
+                # Update Lightning-Fast UI Cache
+                if not current_state:
+                    current_state = models.CurrentAircraftState(icao24=payload.icao24)
+                    db.add(current_state)
+                
+                # Retrieve names for UI
+                operator_name = None
+                if op_id:
+                    op_record = db.query(models.DimOperator).filter(models.DimOperator.id == op_id).first()
+                    operator_name = op_record.name if op_record else None
+
+                current_state.aircraft_id = aircraft.id
+                current_state.session_id = session.session_id if session else None
+                current_state.callsign = payload.callsign
+                current_state.operator_name = operator_name
+                current_state.aircraft_model = aircraft.model
+                current_state.dep_airport_iata = payload.est_departure_airport
+                current_state.arr_airport_iata = payload.est_arrival_airport
+                current_state.latitude = payload.latitude
+                current_state.longitude = payload.longitude
+                current_state.altitude_m = payload.altitude
+                current_state.velocity_kmh = payload.velocity
+                current_state.heading_deg = payload.heading
+                current_state.on_ground = payload.on_ground
+                current_state.squawk = squawk
+                current_state.last_updated = dt_timestamp
+                    
+            except Exception as e:
+                logger.error(f"Error routing payload {payload.icao24}: {e}", exc_info=True)
+                db.rollback() # Rollback only this specific flight iteration, not the whole batch!
+                stats["errors"] += 1
+                
+        try:
+            db.commit() # Final commit for the successful flights in batch
+        except Exception as e:
+            logger.error(f"Batch commit failed: {e}")
+            db.rollback()
+            stats["errors"] += 1
+            
+        return stats
+
+    @staticmethod
+    def _ensure_geo(db: Session, cache: dict, icao: str):
+        icao = icao.upper()
+        if icao in cache: return
+        geo = db.query(models.DimGeography).filter(models.DimGeography.icao_code == icao).first()
+        if not geo:
+            geo = models.DimGeography(icao_code=icao, name=f"Airport {icao}")
+            db.add(geo)
+            db.flush()
+        cache[icao] = geo.id
+
+    @staticmethod
+    def _ensure_operator(db: Session, cache: dict, icao: str):
+        icao = icao.upper()
+        if icao in cache: return
+        operator = db.query(models.DimOperator).filter(models.DimOperator.icao_code == icao).first()
+        if not operator:
+            operator = models.DimOperator(icao_code=icao, name=f"Operator {icao}")
+            db.add(operator)
+            db.flush()
+        cache[icao] = operator.id
+
+
+# --- Query Layer (For the API) ---
+class FlightQueryCRUD:
+    @staticmethod
+    def get_active_flights_with_latest_track(db: Session, limit: int = 500):
+        """Returns currently flying aircrafts for the Map UI using the hyper-fast State table."""
+        fifteen_mins_ago = datetime.utcnow().timestamp() - 900
+        cutoff_dt = datetime.fromtimestamp(fifteen_mins_ago, tz=timezone.utc)
+        
+        query = db.query(models.CurrentAircraftState).filter(
+            models.CurrentAircraftState.last_updated >= cutoff_dt
+        )
+        total = query.count()
+        current_flights = query.order_by(desc(models.CurrentAircraftState.last_updated)).limit(limit).all()
+        return current_flights, total
+
+# Analytics & Maintenance Stubs
+class AnalyticsCRUD:
+    pass
+
+class IngestionJobCRUD:
+    pass

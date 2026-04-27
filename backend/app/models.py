@@ -1,130 +1,241 @@
-"""SQLAlchemy models for the Flight Intelligence database."""
-from sqlalchemy import (Column, Integer, String, Float, DateTime, ForeignKey,
-                        Boolean, Index, BigInteger, Text, UniqueConstraint)
+"""
+Enterprise Aviation Intelligence Models (v3.0)
+SQLAlchemy ORM representation of the Snowflake Schema.
+"""
+from sqlalchemy import (
+    Column, Integer, String, Float, DateTime, ForeignKey,
+    Boolean, Index, BigInteger, Text, Date
+)
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from sqlalchemy.dialects.postgresql import JSONB
 from app.database import Base
-from datetime import datetime
-from typing import Optional
 
+# ═════════════════════════════════════════════════════════════════════════════
+# 1. DIMENSION TABLES (Master Data / Reference Entities)
+# ═════════════════════════════════════════════════════════════════════════════
 
-class Country(Base):
-    __tablename__ = "countries"
+class DimGeography(Base):
+    """Airports, Regions, and Boundaries."""
+    __tablename__ = "dim_geography"
+    
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(100), unique=True, nullable=False, index=True)
-    iso_code = Column(String(3), unique=True, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    airlines = relationship("Airline", back_populates="country")
-
-    def __repr__(self):
-        return f"<Country(name='{self.name}')>"
-
-
-class Airline(Base):
-    __tablename__ = "airlines"
-    id = Column(Integer, primary_key=True, index=True)
-    icao24 = Column(String(6), unique=True, nullable=False, index=True)
-    name = Column(String(200), nullable=True)
-    callsign_prefix = Column(String(10), nullable=True)
-    country_id = Column(Integer, ForeignKey("countries.id"), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    country = relationship("Country", back_populates="airlines")
-    flights = relationship("Flight", back_populates="airline")
-    __table_args__ = (Index('idx_airline_icao24_name', 'icao24', 'name'),)
-
-    def __repr__(self):
-        return f"<Airline(icao24='{self.icao24}', name='{self.name}')>"
-
-
-class Flight(Base):
-    __tablename__ = "flights"
-    id = Column(Integer, primary_key=True, index=True)
-    icao24 = Column(String(6), nullable=False, index=True)
-    callsign = Column(String(20), nullable=True, index=True)
-    airline_id = Column(Integer, ForeignKey("airlines.id"), nullable=True, index=True)
-    origin_country = Column(String(100), nullable=True, index=True)
-    first_seen = Column(BigInteger, nullable=True, index=True)
-    last_seen = Column(BigInteger, nullable=True, index=True)
-    est_departure_airport = Column(String(4), nullable=True, index=True)
-    est_departure_airport_horiz_distance = Column(Integer, nullable=True)
-    est_departure_airport_vert_distance = Column(Integer, nullable=True)
-    est_arrival_airport = Column(String(4), nullable=True, index=True)
-    est_arrival_airport_horiz_distance = Column(Integer, nullable=True)
-    est_arrival_airport_vert_distance = Column(Integer, nullable=True)
-    est_departure_time = Column(BigInteger, nullable=True)
-    est_arrival_time = Column(BigInteger, nullable=True)
-    # Geographic position
+    icao_code = Column(String(4), unique=True, nullable=True, index=True)
+    iata_code = Column(String(3), nullable=True, index=True)
+    name = Column(String(255), nullable=False)
+    city = Column(String(100), nullable=True)
+    country_code = Column(String(2), nullable=True, index=True)
+    
+    # Geo location
     latitude = Column(Float, nullable=True)
     longitude = Column(Float, nullable=True)
-    altitude = Column(Float, nullable=True)
-    velocity = Column(Float, nullable=True)
-    heading = Column(Float, nullable=True)
-    on_ground = Column(Boolean, nullable=True)
-    # Trajectory stored as JSONB list of {ts,lat,lon,alt,vel,hdg}
-    trajectory = Column(JSONB, nullable=True)
-    # Region tag for fast filtering
-    region_key = Column(String(50), nullable=True, index=True)
-    ingestion_time = Column(DateTime(timezone=True), server_default=func.now())
+    elevation_m = Column(Float, nullable=True)
+    
+    meta_data = Column(JSONB, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    unique_flight_id = Column(String(100), unique=True, nullable=False, index=True)
-    airline = relationship("Airline", back_populates="flights")
+
+    def __repr__(self):
+        return f"<DimGeography(icao='{self.icao_code}', name='{self.name}')>"
+
+
+class DimOperator(Base):
+    """Airlines and Operators."""
+    __tablename__ = "dim_operator"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    icao_code = Column(String(3), unique=True, nullable=True, index=True)
+    iata_code = Column(String(2), nullable=True, index=True)
+    name = Column(String(255), nullable=False)
+    country_code = Column(String(2), nullable=True)
+    operator_type = Column(String(50), nullable=True)
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    def __repr__(self):
+        return f"<DimOperator(icao='{self.icao_code}', name='{self.name}')>"
+
+
+class DimAircraft(Base):
+    """The Physical Airplane Asset (SCD Type 2 Ready)."""
+    __tablename__ = "dim_aircraft"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    icao24 = Column(String(6), nullable=False, index=True)
+    registration = Column(String(20), nullable=True, index=True)
+    
+    manufacturer = Column(String(100), nullable=True)
+    model = Column(String(100), nullable=True)
+    type_code = Column(String(10), nullable=True, index=True)
+    serial_number = Column(String(100), nullable=True)
+    year_built = Column(Integer, nullable=True)
+    
+    operator_id = Column(Integer, ForeignKey("dim_operator.id"), nullable=True)
+    country_code = Column(String(2), nullable=True)
+    
+    # SCD Type 2 boundaries
+    valid_from = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    valid_to = Column(DateTime(timezone=True), nullable=True)
+    
+    # Relationships
+    operator = relationship("DimOperator")
 
     __table_args__ = (
-        Index('idx_flight_time_range', 'first_seen', 'last_seen'),
-        Index('idx_flight_airports', 'est_departure_airport', 'est_arrival_airport'),
-        Index('idx_flight_ingestion', 'ingestion_time'),
-        Index('idx_flight_country', 'origin_country'),
-        Index('idx_flight_geo', 'latitude', 'longitude'),
-        Index('idx_flight_region', 'region_key'),
+        Index('idx_aircraft_hex_active', 'icao24', 'valid_to'),
     )
 
     def __repr__(self):
-        return f"<Flight(icao24='{self.icao24}', callsign='{self.callsign}')>"
+        return f"<DimAircraft(icao24='{self.icao24}', reg='{self.registration}')>"
 
-    @property
-    def duration_seconds(self) -> Optional[int]:
-        if self.first_seen and self.last_seen:
-            return self.last_seen - self.first_seen
-        return None
 
-    @property
-    def duration_minutes(self) -> Optional[float]:
-        d = self.duration_seconds
-        return d / 60 if d else None
+# ═════════════════════════════════════════════════════════════════════════════
+# 2. OPERATIONAL FACT TABLES
+# ═════════════════════════════════════════════════════════════════════════════
 
-    @property
-    def duration_hours(self) -> Optional[float]:
-        d = self.duration_minutes
-        return d / 60 if d else None
+class FactFlightSession(Base):
+    """The specific journey of an aircraft."""
+    __tablename__ = "fact_flight_session"
+    
+    session_id = Column(BigInteger, primary_key=True, index=True, autoincrement=True)
+    
+    aircraft_id = Column(Integer, ForeignKey("dim_aircraft.id"), nullable=False, index=True)
+    operator_id = Column(Integer, ForeignKey("dim_operator.id"), nullable=True, index=True)
+    callsign = Column(String(20), nullable=True, index=True)
+    
+    dep_airport_id = Column(Integer, ForeignKey("dim_geography.id"), nullable=True, index=True)
+    arr_airport_id = Column(Integer, ForeignKey("dim_geography.id"), nullable=True, index=True)
+    
+    first_seen_ts = Column(DateTime(timezone=True), nullable=False, index=True)
+    last_seen_ts = Column(DateTime(timezone=True), nullable=False, index=True)
+    actual_takeoff_ts = Column(DateTime(timezone=True), nullable=True)
+    actual_landing_ts = Column(DateTime(timezone=True), nullable=True)
+    
+    flight_status = Column(String(20), default="active", index=True)
+    total_distance_km = Column(Float, nullable=True)
+    max_altitude_m = Column(Float, nullable=True)
+    
+    # Relationships
+    aircraft = relationship("DimAircraft")
+    operator = relationship("DimOperator")
+    dep_airport = relationship("DimGeography", foreign_keys=[dep_airport_id])
+    arr_airport = relationship("DimGeography", foreign_keys=[arr_airport_id])
+    
+    tracks = relationship("TrackTelemetry", back_populates="session", cascade="all, delete-orphan")
 
+    __table_args__ = (
+        Index('idx_flight_search', 'callsign', 'first_seen_ts'),
+        Index('idx_flight_route', 'dep_airport_id', 'arr_airport_id'),
+    )
+
+    def __repr__(self):
+        return f"<FlightSession(id={self.session_id}, callsign='{self.callsign}')>"
+
+
+class TrackTelemetry(Base):
+    """Time-series radar breadcrumbs."""
+    __tablename__ = "track_telemetry"
+    
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    timestamp = Column(DateTime(timezone=True), primary_key=True, nullable=False)
+    
+    session_id = Column(BigInteger, ForeignKey("fact_flight_session.session_id", ondelete="CASCADE"), nullable=False, index=True)
+    
+    latitude = Column(Float, nullable=False)
+    longitude = Column(Float, nullable=False)
+    altitude_m = Column(Float, nullable=True)
+    velocity_kmh = Column(Float, nullable=True)
+    heading_deg = Column(Float, nullable=True)
+    vertical_rate_ms = Column(Float, nullable=True)
+    
+    is_on_ground = Column(Boolean, default=False)
+    squawk = Column(String(4), nullable=True)
+    
+    session = relationship("FactFlightSession", back_populates="tracks")
+
+    __table_args__ = (
+        Index('idx_tracks_session_time', 'session_id', 'timestamp', postgresql_using='btree'),
+        Index('idx_tracks_geo', 'latitude', 'longitude'),
+    )
+
+
+class FactAviationEvent(Base):
+    """The Intelligence Layer - tracks anomalies, emergencies, and state changes."""
+    __tablename__ = "fact_aviation_events"
+    
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    timestamp = Column(DateTime(timezone=True), nullable=False, index=True)
+    
+    aircraft_id = Column(Integer, ForeignKey("dim_aircraft.id"), nullable=False)
+    session_id = Column(BigInteger, ForeignKey("fact_flight_session.session_id"), nullable=True)
+    
+    event_category = Column(String(50), nullable=False) # e.g., EMERGENCY, GEOFENCE
+    event_type = Column(String(50), nullable=False)     # e.g., SQUAWK_7700
+    
+    event_details = Column(JSONB, nullable=True)
+    
+    __table_args__ = (
+        Index('idx_events_lookup', 'aircraft_id', 'event_category', 'timestamp'),
+    )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 3. UI ACCELERATION (Denormalized)
+# ═════════════════════════════════════════════════════════════════════════════
+
+class CurrentAircraftState(Base):
+    """Lightning fast flat table for the Live Map UI."""
+    __tablename__ = "current_aircraft_state"
+    
+    icao24 = Column(String(6), primary_key=True, nullable=False)
+    aircraft_id = Column(Integer, nullable=True)
+    session_id = Column(BigInteger, nullable=True)
+    
+    callsign = Column(String(20), nullable=True)
+    operator_name = Column(String(255), nullable=True)
+    aircraft_model = Column(String(100), nullable=True)
+    
+    dep_airport_iata = Column(String(4), nullable=True)
+    arr_airport_iata = Column(String(4), nullable=True)
+    
+    latitude = Column(Float, nullable=True)
+    longitude = Column(Float, nullable=True)
+    altitude_m = Column(Float, nullable=True)
+    velocity_kmh = Column(Float, nullable=True)
+    heading_deg = Column(Float, nullable=True)
+    on_ground = Column(Boolean, nullable=True)
+    squawk = Column(String(4), nullable=True)
+    
+    last_updated = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    
+    __table_args__ = (
+        Index('idx_current_state_updated', 'last_updated'),
+    )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 4. MAINTENANCE
+# ═════════════════════════════════════════════════════════════════════════════
 
 class IngestionJob(Base):
-    """Tracks historical ingestion jobs – prevents duplicate work."""
+    """Tracks worker jobs and API budget usage."""
     __tablename__ = "ingestion_jobs"
+    
     id = Column(Integer, primary_key=True, index=True)
-    date_str = Column(String(10), nullable=False, index=True)      # YYYY-MM-DD
-    region_key = Column(String(50), nullable=False, index=True)
-    lamin = Column(Float, nullable=False)
-    lomin = Column(Float, nullable=False)
-    lamax = Column(Float, nullable=False)
-    lomax = Column(Float, nullable=False)
-    begin_ts = Column(BigInteger, nullable=False)
-    end_ts = Column(BigInteger, nullable=False)
-    # status: pending | running | completed | failed
-    status = Column(String(20), default="pending", nullable=False, index=True)
-    flights_ingested = Column(Integer, default=0)
-    chunks_total = Column(Integer, default=0)
-    chunks_done = Column(Integer, default=0)
+    job_type = Column(String(50), nullable=False)
+    target_date = Column(Date, nullable=True)
+    region_key = Column(String(50), nullable=False)
+    
+    status = Column(String(20), default="pending", nullable=False)
+    records_processed = Column(Integer, default=0)
+    
+    api_calls = Column(Integer, default=0)
+    credits_used = Column(Integer, default=0)
+    
     error_message = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    started_at = Column(DateTime(timezone=True), nullable=True)
+    started_at = Column(DateTime(timezone=True), server_default=func.now())
     completed_at = Column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
-        UniqueConstraint('date_str', 'region_key', name='uq_ingestion_date_region'),
-        Index('idx_ingestion_status', 'status'),
-        Index('idx_ingestion_date_region', 'date_str', 'region_key'),
+        Index('idx_ingestion_lookup', 'job_type', 'target_date', 'region_key'),
     )

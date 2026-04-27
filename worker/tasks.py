@@ -4,7 +4,10 @@ from celery.exceptions import MaxRetriesExceededError, SoftTimeLimitExceeded
 import logging
 import sys
 import os
+import time
 from typing import List, Optional
+
+from sqlalchemy import create_engine, inspect
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'backend'))
 
@@ -59,6 +62,20 @@ def ingest_recent_geo_task(self, region_keys: Optional[List[str]] = None,
     SRE Production: Ingest real-time flights & routes exclusively from AirLabs.
     This is the PRIMARY source for live radar data.
     """
+    # ── SRE GUARD: Wait until database tables are ready ──────────────────
+    engine = create_engine(settings.DATABASE_URL)
+    inspector = inspect(engine)
+    for attempt in range(30):  # up to 30 * 2 = 60 seconds
+        if 'dim_geography' in inspector.get_table_names():
+            logger.info("Database tables are ready. Starting ingestion...")
+            break
+        logger.warning(f"Waiting for database tables... attempt {attempt+1}/30")
+        time.sleep(2)
+    else:
+        logger.error("Database tables not ready after 60s. Aborting ingestion.")
+        return {'status': 'error', 'message': 'Tables not ready'}
+    # ──────────────────────────────────────────────────────────────────────
+
     try:
         # Get active regions (all or specified ones)
         active_keys = region_keys or settings.get_active_region_keys()

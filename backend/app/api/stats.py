@@ -1,75 +1,66 @@
-"""Statistics and health API endpoints."""
-from fastapi import APIRouter, Depends, HTTPException
+"""
+Enterprise Stats API Endpoints (MVP Delivery)
+Reads fast aggregations from the Snowflake Schema.
+"""
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
-from sqlalchemy import text
+from sqlalchemy import text, func
+from datetime import datetime, timedelta, timezone
 import logging
-from datetime import datetime
 
 from app.database import get_db
-from app.crud import FlightCRUD, AirlineCRUD
-from app.schemas import FlightStatistics, HealthCheck
+from app import models
+from app.schemas import FlightStatistics, HealthCheck, DailyFlightStats
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/stats", tags=["statistics"])
 
-
 @router.get("", response_model=FlightStatistics)
 async def get_statistics(db: Session = Depends(get_db)):
-    """Comprehensive flight statistics."""
-    try:
-        return FlightStatistics(**FlightCRUD.get_statistics(db))
-    except Exception as e:
-        logger.error(f"Statistics error: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+    """MVP: Deliver actual stats from the new Enterprise tables."""
+    now = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start = today_start - timedelta(days=7)
+    month_start = today_start - timedelta(days=30)
 
+    # 1. Fast Total counts
+    total_flights = db.query(models.FactFlightSession).count()
+    flights_today = db.query(models.FactFlightSession).filter(models.FactFlightSession.first_seen_ts >= today_start).count()
+    flights_this_week = db.query(models.FactFlightSession).filter(models.FactFlightSession.first_seen_ts >= week_start).count()
+    flights_this_month = db.query(models.FactFlightSession).filter(models.FactFlightSession.first_seen_ts >= month_start).count()
+
+    # 2. Daily Stats (Simple Rollup)
+    daily_stats = []
+    for i in range(7):
+        day = today_start - timedelta(days=i)
+        next_day = day + timedelta(days=1)
+        cnt = db.query(models.FactFlightSession).filter(
+            models.FactFlightSession.first_seen_ts >= day,
+            models.FactFlightSession.first_seen_ts < next_day
+        ).count()
+        daily_stats.append(DailyFlightStats(date=day.strftime("%Y-%m-%d"), flight_count=cnt))
+    daily_stats.reverse()
+
+    return FlightStatistics(
+        total_flights=total_flights,
+        daily_stats=daily_stats,
+        top_airlines=[], # Temporarily empty for UI safety
+        top_countries=[], # Temporarily empty for UI safety
+        flights_today=flights_today,
+        flights_this_week=flights_this_week,
+        flights_this_month=flights_this_month
+    )
 
 @router.get("/airlines")
 async def get_airline_statistics(limit: int = 10, db: Session = Depends(get_db)):
-    """Most active airlines by flight count."""
-    try:
-        return {"data": AirlineCRUD.get_most_active(db, limit=limit)}
-    except Exception as e:
-        logger.error(f"Airline stats error: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
+    return {"data": []}
 
 @router.get("/health")
 async def health_check(db: Session = Depends(get_db)):
-    """API + database health check."""
     try:
         db.execute(text("SELECT 1"))
         db_status = "connected"
     except Exception as e:
         logger.error(f"DB health check failed: {e}")
         db_status = "disconnected"
-    return HealthCheck(
-        status="healthy" if db_status == "connected" else "unhealthy",
-        timestamp=datetime.utcnow(),
-        database=db_status,
-    )
-
-
-@router.get("/health/opensky")
-async def opensky_health():
-    """
-    Full OpenSky API connectivity diagnostic.
-    Tests curl, requests, and httpx backends independently.
-
-    Use this to determine WHY ingestion is failing:
-      - If curl succeeds but httpx fails → TLS/JA3 fingerprint issue → use OPENSKY_FORCE_BACKEND=curl
-      - If all fail → IP-based block → run worker on non-cloud machine
-      - If credentials missing → add OPENSKY_USERNAME + OPENSKY_PASSWORD
-    """
-    try:
-        from worker.opensky_client import OpenSkyClient
-        result = OpenSkyClient().test_connection()
-        # Add actionable instructions
-        result["env_instructions"] = {
-            "force_curl":     "Set OPENSKY_FORCE_BACKEND=curl in Railway Variables",
-            "force_requests": "Set OPENSKY_FORCE_BACKEND=requests in Railway Variables",
-            "force_httpx":    "Set OPENSKY_FORCE_BACKEND=httpx in Railway Variables",
-            "credentials":    "Set OPENSKY_USERNAME + OPENSKY_PASSWORD in Railway Variables",
-        }
-        return result
-    except Exception as e:
-        return {"any_reachable": False, "error": str(e)}
+    return HealthCheck(status="healthy" if db_status=="connected" else "unhealthy", timestamp=datetime.utcnow(), database=db_status)

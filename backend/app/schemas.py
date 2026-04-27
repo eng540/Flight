@@ -3,8 +3,8 @@ Enterprise Pydantic Schemas (v3.0)
 Strict validation and typing for the Snowflake Architecture.
 """
 from pydantic import BaseModel, Field, ConfigDict
-from typing import Optional, List, Dict, Any
-from datetime import datetime, date
+from typing import Optional, List
+from datetime import datetime
 
 # ── DIMENSIONS (Reference Data) ─────────────────────────────────────────────
 
@@ -97,6 +97,7 @@ class RawIngestionPayload(BaseModel):
     est_departure_airport: Optional[str] = None
     est_arrival_airport: Optional[str] = None
     region_key: Optional[str] = "global"
+    squawk: Optional[str] = None  # SRE Added for Emergency Events
 
 # ── FALLBACK SCHEMAS FOR UI COMPATIBILITY ──────────────────────────────────
 # These schemas prevent the Frontend from crashing during the Enterprise Migration.

@@ -46,16 +46,16 @@ export function FilterSection({ filters, onFilterChange }: FilterSectionProps) {
       <CardHeader className="pb-3">
         <CardTitle className="flex items-center gap-2 text-lg">
           <Filter className="h-5 w-5" />
-          Filters
+          تصفية الرحلات
           {hasActiveFilters && (
             <Button 
               variant="ghost" 
               size="sm" 
               onClick={handleClearFilters}
-              className="ml-auto"
+              className="mr-auto"
             >
-              <X className="h-4 w-4 mr-1" />
-              Clear
+              <X className="h-4 w-4 ml-1" />
+              مسح الفلاتر
             </Button>
           )}
         </CardTitle>
@@ -64,7 +64,7 @@ export function FilterSection({ filters, onFilterChange }: FilterSectionProps) {
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
           {/* Airline Filter */}
           <div className="space-y-2">
-            <Label htmlFor="airline">Airline</Label>
+            <Label htmlFor="airline">شركة الطيران</Label>
             <Select
               value={localFilters.airline_id?.toString() || 'all'}
               onValueChange={(value) => 
@@ -75,11 +75,11 @@ export function FilterSection({ filters, onFilterChange }: FilterSectionProps) {
               }
             >
               <SelectTrigger id="airline">
-                <SelectValue placeholder="Select airline" />
+                <SelectValue placeholder="اختر الشركة" />
               </SelectTrigger>
               <SelectContent>
                 {/* تم إصلاح الخطأ هنا: استبدال القيمة الفارغة "" بـ "all" */}
-                <SelectItem value="all">All Airlines</SelectItem>
+                <SelectItem value="all">جميع الشركات</SelectItem>
                 {airlines.map((airline) => (
                   <SelectItem key={airline.id} value={airline.id.toString()}>
                     {airline.name || airline.icao24.toUpperCase()}
@@ -91,10 +91,10 @@ export function FilterSection({ filters, onFilterChange }: FilterSectionProps) {
 
           {/* Country Filter */}
           <div className="space-y-2">
-            <Label htmlFor="country">Country</Label>
+            <Label htmlFor="country">الدولة</Label>
             <Input
               id="country"
-              placeholder="e.g., United States"
+              placeholder="مثال: السعودية"
               value={localFilters.country || ''}
               onChange={(e) => 
                 setLocalFilters({ 
@@ -107,7 +107,7 @@ export function FilterSection({ filters, onFilterChange }: FilterSectionProps) {
 
           {/* Date From */}
           <div className="space-y-2">
-            <Label htmlFor="date_from">From Date</Label>
+            <Label htmlFor="date_from">من تاريخ</Label>
             <Input
               id="date_from"
               type="date"
@@ -123,7 +123,7 @@ export function FilterSection({ filters, onFilterChange }: FilterSectionProps) {
 
           {/* Date To */}
           <div className="space-y-2">
-            <Label htmlFor="date_to">To Date</Label>
+            <Label htmlFor="date_to">إلى تاريخ</Label>
             <Input
               id="date_to"
               type="date"
@@ -139,10 +139,10 @@ export function FilterSection({ filters, onFilterChange }: FilterSectionProps) {
 
           {/* Departure Airport */}
           <div className="space-y-2">
-            <Label htmlFor="departure">Departure (ICAO)</Label>
+            <Label htmlFor="departure">مطار الإقلاع (ICAO)</Label>
             <Input
               id="departure"
-              placeholder="e.g., KJFK"
+              placeholder="مثال: OEDF"
               value={localFilters.departure_airport || ''}
               onChange={(e) => 
                 setLocalFilters({ 
@@ -156,10 +156,10 @@ export function FilterSection({ filters, onFilterChange }: FilterSectionProps) {
 
           {/* Arrival Airport */}
           <div className="space-y-2">
-            <Label htmlFor="arrival">Arrival (ICAO)</Label>
+            <Label htmlFor="arrival">مطار الوصول (ICAO)</Label>
             <Input
               id="arrival"
-              placeholder="e.g., EGLL"
+              placeholder="مثال: OEMA"
               value={localFilters.arrival_airport || ''}
               onChange={(e) => 
                 setLocalFilters({ 
@@ -175,8 +175,8 @@ export function FilterSection({ filters, onFilterChange }: FilterSectionProps) {
         {/* Apply Button */}
         <div className="mt-4 flex justify-end">
           <Button onClick={handleApplyFilters}>
-            <Filter className="h-4 w-4 mr-2" />
-            Apply Filters
+            <Filter className="h-4 w-4 ml-2" />
+            تطبيق الفلاتر
           </Button>
         </div>
       </CardContent>

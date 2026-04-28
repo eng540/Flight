@@ -5,6 +5,7 @@ Queries the Fact and Dimension tables to generate high-performance metrics.
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy import text, func, cast, Date
+from sqlalchemy import desc
 from datetime import datetime, timedelta, timezone
 import logging
 

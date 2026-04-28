@@ -1,14 +1,10 @@
-"""
-Enterprise Live API (v4.0)
-Reads directly from the lightning-fast CurrentAircraftState table.
-Supports SQL-level Bounding Box filtering and advanced search.
-"""
 from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 import pandas as pd
 import io
 import logging
+import math
 
 from app.database import get_db
 from app import models
@@ -17,7 +13,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/flights", tags=["flights"])
 
 def parse_bounds(bounds_str: str):
-    """Parse bounds string: maxLat,minLat,minLon,maxLon (FR24 format)"""
     try:
         parts = [float(x.strip()) for x in bounds_str.split(",")]
         if len(parts) != 4:
@@ -31,20 +26,20 @@ def parse_bounds(bounds_str: str):
 async def get_live_flights(
     bounds: str = Query(None, description="MaxLat,MinLat,MinLon,MaxLon"),
     callsign: str = Query(None, description="Filter by callsign"),
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(50, ge=1, le=500, description="Items per page"),
     export: bool = Query(False, description="Set to True to download Excel"),
     db: Session = Depends(get_db)
 ):
     """
-    SRE FIX: Reads real-time data from DB with SQL-level filtering.
+    SRE FIX: Added SQL-level Pagination to prevent UI freezing and reduce payload size.
     """
     try:
-        # 1. Base Query on the fast state table
         query = db.query(models.CurrentAircraftState).filter(
             models.CurrentAircraftState.latitude.isnot(None),
             models.CurrentAircraftState.longitude.isnot(None)
         )
 
-        # 2. Apply Bounding Box Filter (SQL Level for Performance)
         if bounds:
             bbox = parse_bounds(bounds)
             if bbox:
@@ -58,19 +53,26 @@ async def get_live_flights(
                     )
                 )
 
-        # 3. Apply Callsign Filter
         if callsign:
             query = query.filter(models.CurrentAircraftState.callsign.ilike(f"%{callsign}%"))
 
-        # 4. Execute Query
-        current_flights = query.order_by(models.CurrentAircraftState.last_updated.desc()).limit(2000).all()
+        # حساب الإجمالي للترقيم (Pagination Math)
+        total_records = query.count()
+        total_pages = math.ceil(total_records / page_size) if total_records > 0 else 1
+
+        # تطبيق الترقيم فقط إذا لم يكن طلب تصدير
+        if not export:
+            query = query.offset((page - 1) * page_size).limit(page_size)
+        else:
+            query = query.limit(5000) # الحد الأقصى للتصدير
+
+        current_flights = query.order_by(models.CurrentAircraftState.last_updated.desc()).all()
         
-        # 5. Map to UI Format
         mapped_flights = [{
             "id": f.icao24,
             "icao24": f.icao24,
             "callsign": f.callsign or "غير معروف",
-            "origin_country": "غير معروف", # Can be joined later
+            "origin_country": "غير معروف",
             "latitude": f.latitude,
             "longitude": f.longitude,
             "altitude": f.altitude_m,
@@ -81,7 +83,6 @@ async def get_live_flights(
             "last_seen": f.last_updated.timestamp() if f.last_updated else None
         } for f in current_flights]
             
-        # 6. Excel Export
         if export:
             df = pd.DataFrame(mapped_flights)
             buffer = io.BytesIO()
@@ -95,10 +96,13 @@ async def get_live_flights(
             )
             
         return {
-            "total": len(mapped_flights),
+            "total": total_records,
+            "page": page,
+            "page_size": page_size,
+            "pages": total_pages,
             "data": mapped_flights
         }
         
     except Exception as e:
         logger.error(f"Error reading live flights from DB: {e}", exc_info=True)
-        return {"total": 0, "data": []}
+        return {"total": 0, "page": 1, "pages": 1, "data": []}

@@ -1,4 +1,5 @@
-"""Main FastAPI application – Flight Intelligence v2."""
+"""Main FastAPI application – Flight Intelligence v3."""
+import asyncio
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
@@ -20,16 +21,53 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# SRE FIX: دالة مساعدة لتشغيل سكريبت التهيئة في الخلفية
+async def run_data_seeder_async():
+    import sys
+    import os
+    import importlib.util
+    
+    logger.info("SRE: Initiating background data seeding process...")
+    try:
+        # 1. تحديد مسار السكريبت
+        script_path = os.path.join(os.path.dirname(__file__), "..", "seed_reference_data.py")
+        
+        if not os.path.exists(script_path):
+            logger.error(f"SRE Error: Seeder script not found at {script_path}")
+            return
+
+        # 2. تحميل السكريبت كـ وحدة برمجية (Module)
+        spec = importlib.util.spec_from_file_location("seed_module", script_path)
+        seed_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(seed_module)
+        
+        # 3. تشغيل الدوال داخل الجلسة (Session)
+        from app.database import SessionLocal
+        with SessionLocal() as db:
+            # نستخدم تشغيل متزامن (Synchronous) داخل ثريد (Thread) لتجنب تجميد الـ Async Loop
+            await asyncio.to_thread(seed_module.seed_geography, db)
+            await asyncio.to_thread(seed_module.seed_operators, db)
+            
+        logger.info("SRE: Background data seeding finished successfully.")
+    except Exception as e:
+        logger.error(f"SRE Error during auto-seeding: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info(f"Starting {settings.APP_NAME} v2")
+    logger.info(f"Starting {settings.APP_NAME} v3.0 Enterprise")
+    
+    # SRE FIX: تشغيل سحب المطارات والشركات آلياً في الخلفية عند الإقلاع
+    # استخدام create_task يضمن أن السيرفر يقلع فوراً ولا ينتظر اكتمال التحميل
+    asyncio.create_task(run_data_seeder_async())
+    
     yield
     logger.info(f"Shutting down {settings.APP_NAME}")
 
 
 app = FastAPI(
     title=settings.APP_NAME,
-    version="2.0.0",
+    version="3.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -63,7 +101,7 @@ app.include_router(regions.router)
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy", "version": "2.0.0"}
+    return {"status": "healthy", "version": "3.0.0"}
 
 
 # ── Serve React frontend ──────────────────────────────────────────────────────
@@ -95,4 +133,4 @@ else:
 
     @app.get("/")
     async def root():
-        return {"message": "Flight Intelligence API v2 is running", "docs": "/docs"}
+        return {"message": "Flight Intelligence API v3 is running", "docs": "/docs"}

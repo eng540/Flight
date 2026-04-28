@@ -6,54 +6,53 @@ import { Badge } from '@/components/ui/badge';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
-import { Plane, Download, MapPin, Loader2, Calendar, ArrowUp, Gauge, Search } from 'lucide-react';
+import { Plane, Download, MapPin, Loader2, Calendar, ArrowUp, Gauge } from 'lucide-react';
 import { flightsApi } from '@/api/client';
 import { toast } from 'sonner';
 
 export function FlightsTable() {
   const [flights, setFlights] = useState<any[]>([]);
   const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+  const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   
-  // Bounds الافتراضية (الشرق الأوسط وشمال أفريقيا)
   const defaultBounds = "63.0,12.0,25.0,42.0";
+  const pageSize = 50;
 
   const loadData = useCallback(async () => {
     try {
-      // نمرر الـ bounds و الـ callsign للبحث في قاعدة البيانات مباشرة
-      const res = await flightsApi.getFlights(defaultBounds);
+      setLoading(true);
+      // SRE FIX: Fetching paginated data directly from backend
+      const res = await flightsApi.getFlights(defaultBounds, searchTerm, page, pageSize);
       
-      // فلترة محلية سريعة إذا كان هناك نص بحث (أو يمكن إرسالها للـ API)
-      let filteredData = res?.data || [];
-      if (searchTerm.trim()) {
-        const term = searchTerm.toLowerCase();
-        filteredData = filteredData.filter((f: any) => 
-          f.callsign?.toLowerCase().includes(term) || 
-          f.icao24?.toLowerCase().includes(term)
-        );
-      }
-      
-      setFlights(filteredData);
-      setTotal(filteredData.length);
+      setFlights(res?.data || []);
+      setTotal(res?.total || 0);
+      setTotalPages(res?.pages || 1);
     } catch (e) {
       toast.error('حدث خطأ أثناء جلب البيانات الحية');
     } finally {
       setLoading(false);
     }
+  }, [searchTerm, page]);
+
+  // Reset to page 1 when search term changes
+  useEffect(() => {
+    setPage(1);
   }, [searchTerm]);
 
   useEffect(() => {
     loadData();
-    const interval = setInterval(loadData, 30000); // تحديث كل 30 ثانية
+    const interval = setInterval(loadData, 30000);
     return () => clearInterval(interval);
   }, [loadData]);
 
   const handleExport = async () => {
     try {
       setExporting(true);
-      const blob = await flightsApi.exportFlights(defaultBounds);
+      const blob = await flightsApi.exportFlights(defaultBounds, searchTerm);
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
@@ -89,19 +88,6 @@ export function FlightsTable() {
     });
   };
 
-  if (loading && flights.length === 0) {
-    return (
-      <Card>
-        <CardHeader><div className="h-6 w-48 bg-muted rounded animate-pulse" /></CardHeader>
-        <CardContent>
-          <div className="h-96 bg-muted rounded animate-pulse flex items-center justify-center">
-            <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-          </div>
-        </CardContent>
-      </Card>
-    );
-  }
-
   return (
     <Card>
       <CardHeader>
@@ -122,7 +108,7 @@ export function FlightsTable() {
               />
             </div>
 
-            <Button variant="outline" onClick={handleExport} disabled={exporting || flights.length === 0}>
+            <Button variant="outline" onClick={handleExport} disabled={exporting || total === 0}>
               <Download className="h-4 w-4 ml-2" />
               {exporting ? 'جارٍ التصدير...' : 'تصدير Excel'}
             </Button>
@@ -131,7 +117,12 @@ export function FlightsTable() {
       </CardHeader>
 
       <CardContent>
-        <div className="rounded-md border">
+        <div className="rounded-md border relative min-h-[400px]">
+          {loading && (
+            <div className="absolute inset-0 bg-background/50 backdrop-blur-sm flex items-center justify-center z-10">
+              <Loader2 className="h-8 w-8 animate-spin text-primary" />
+            </div>
+          )}
           <Table>
             <TableHeader>
               <TableRow>
@@ -145,7 +136,7 @@ export function FlightsTable() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {flights.length === 0 ? (
+              {flights.length === 0 && !loading ? (
                 <TableRow>
                   <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
                     لا توجد رحلات مطابقة للبحث
@@ -175,6 +166,31 @@ export function FlightsTable() {
             </TableBody>
           </Table>
         </div>
+
+        {/* Pagination Controls */}
+        {totalPages > 1 && (
+          <div className="flex items-center justify-between mt-4">
+            <Button 
+              variant="outline" 
+              size="sm" 
+              disabled={page === 1 || loading} 
+              onClick={() => setPage(p => p - 1)}
+            >
+              السابق
+            </Button>
+            <span className="text-sm text-muted-foreground">
+              صفحة {page} من {totalPages}
+            </span>
+            <Button 
+              variant="outline" 
+              size="sm" 
+              disabled={page === totalPages || loading} 
+              onClick={() => setPage(p => p + 1)}
+            >
+              التالي
+            </Button>
+          </div>
+        )}
       </CardContent>
     </Card>
   );

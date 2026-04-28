@@ -1,82 +1,96 @@
 """
-Enterprise Flight API Endpoints (v3.0)
-Serves data from the Snowflake Schema.
+Live Proxy API (MVP for Client Demo)
+Bypasses DB temporarily to show REAL-TIME data from FR24 directly to the UI.
 """
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
-from typing import Optional
+from fastapi import APIRouter, HTTPException, Query, Response
+from typing import Optional, List
+import requests
+import os
 import logging
-
-from app.database import get_db
-from app.crud import FlightQueryCRUD
-from app.schemas import FlightListResponse, FlightSessionResponse
-# (Import fallback for legacy UI properties)
 from pydantic import BaseModel
+import pandas as pd
+import io
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/flights", tags=["flights"])
 
-@router.get("", response_model=dict)
-async def get_flights(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(500, ge=1, le=1000), # Increased limit for the Map
-    db: Session = Depends(get_db),
+# Temporary Schema for UI
+class FlightLiveProxy(BaseModel):
+    id: str
+    icao24: str
+    callsign: Optional[str]
+    origin_country: Optional[str]
+    latitude: float
+    longitude: float
+    altitude: float
+    velocity: float
+    heading: float
+    est_departure_airport: Optional[str]
+    est_arrival_airport: Optional[str]
+
+@router.get("/live", response_model=dict)
+async def get_live_flights_proxy(
+    bounds: str = Query("63.0,12.0,25.0,42.0", description="MaxLat,MinLat,MinLon,MaxLon (e.g. Middle East)"),
+    export: bool = Query(False, description="Set to True to download Excel")
 ):
     """
-    Get active flights (mapped to the legacy frontend format temporarily).
+    WOW FACTOR: Directly fetches live flights from FR24 to show on the Map/Table immediately!
     """
-    sessions, total = FlightQueryCRUD.get_active_flights_with_latest_track(db, limit=page_size)
-    
-    # --- SRE ADAPTER: Transform Enterprise Schema to Legacy Frontend Schema ---
-    # Because the frontend expects the old flat structure, we map it here
-    # until we upgrade the React UI.
-    legacy_data = []
-    for s in sessions:
-        # We need the latest track for the map
-        # Note: In a true prod system, we fetch this via a joined subquery.
-        # For now, we simulate the last known position.
-        from app.models import TrackTelemetry
-        from sqlalchemy import desc
-        
-        last_track = db.query(TrackTelemetry).filter(
-            TrackTelemetry.session_id == s.session_id
-        ).order_by(desc(TrackTelemetry.timestamp)).first()
+    api_key = os.getenv("FR24_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="FR24_API_KEY is missing in server environment.")
 
-        if last_track:
-            legacy_data.append({
-                "id": s.session_id,
-                "icao24": s.aircraft.icao24 if s.aircraft else "UNKNOWN",
-                "callsign": s.callsign,
-                "origin_country": s.aircraft.country_code if s.aircraft else None,
-                "first_seen": int(s.first_seen_ts.timestamp()),
-                "last_seen": int(last_track.timestamp.timestamp()),
-                "est_departure_airport": s.dep_airport.icao_code if s.dep_airport else None,
-                "est_arrival_airport": s.arr_airport.icao_code if s.arr_airport else None,
-                "latitude": last_track.latitude,
-                "longitude": last_track.longitude,
-                "altitude": last_track.altitude_m,
-                "velocity": last_track.velocity_kmh,
-                "heading": last_track.heading_deg,
-                "on_ground": last_track.is_on_ground,
-                "duration_seconds": int((last_track.timestamp - s.first_seen_ts).total_seconds())
+    headers = {
+        "Accept": "application/json",
+        "Accept-Version": "v1",
+        "Authorization": f"Bearer {api_key}"
+    }
+    
+    url = f"https://fr24api.flightradar24.com/api/live/flight-positions/full?bounds={bounds}&limit=1000"
+    
+    try:
+        res = requests.get(url, headers=headers, timeout=15)
+        if res.status_code != 200:
+            logger.error(f"FR24 Proxy Error: {res.text}")
+            raise HTTPException(status_code=502, detail="Failed to fetch live data from provider.")
+            
+        flights_data = res.json().get("data", [])
+        
+        # Transform for our UI
+        mapped_flights = []
+        for f in flights_data:
+            mapped_flights.append({
+                "id": f.get("hex", "unknown"),
+                "icao24": f.get("hex", "unknown"),
+                "callsign": f.get("callsign") or f.get("flight"),
+                "origin_country": f.get("reg")[:2] if f.get("reg") else "Unknown",
+                "latitude": f.get("lat", 0.0),
+                "longitude": f.get("lon", 0.0),
+                "altitude": f.get("alt", 0) * 0.3048, # meters
+                "velocity": f.get("gspeed", 0) * 1.852, # km/h
+                "heading": f.get("track", 0),
+                "est_departure_airport": f.get("orig_icao"),
+                "est_arrival_airport": f.get("dest_icao"),
             })
             
-    pages = (total + page_size - 1) // page_size
-    return {
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "pages": pages,
-        "data": legacy_data
-    }
-
-@router.get("/filter")
-async def filter_flights(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(500, ge=1, le=1000),
-    db: Session = Depends(get_db),
-    # Catch all legacy params
-    **kwargs
-):
-    """Temporary fallback to get_flights to keep UI Map alive during migration."""
-    return await get_flights(page=page, page_size=page_size, db=db)
+        # Feature: Export to Excel on the fly!
+        if export:
+            df = pd.DataFrame(mapped_flights)
+            # Create a bytes buffer
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                df.to_excel(writer, index=False, sheet_name='Live Flights')
+            buffer.seek(0)
+            return Response(
+                content=buffer.read(),
+                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                headers={"Content-Disposition": "attachment; filename=live_flights_export.xlsx"}
+            )
+            
+        return {
+            "total": len(mapped_flights),
+            "data": mapped_flights
+        }
+        
+    except requests.Timeout:
+        raise HTTPException(status_code=504, detail="Request to live provider timed out.")

@@ -38,10 +38,10 @@ function App() {
       <main className="container mx-auto px-4 py-6">
         <Tabs defaultValue="dashboard" className="space-y-6">
           <TabsList className="grid w-full grid-cols-4 lg:w-auto lg:inline-flex">
-            <TabsTrigger value="dashboard">📊 Dashboard</TabsTrigger>
-            <TabsTrigger value="analytics">📈 Analytics</TabsTrigger>
-            <TabsTrigger value="map">🗺️ Map</TabsTrigger>
-            <TabsTrigger value="ingestion">📥 Ingestion</TabsTrigger>
+            <TabsTrigger value="dashboard">📊 لوحة القيادة</TabsTrigger>
+            <TabsTrigger value="analytics">📈 التحليلات</TabsTrigger>
+            <TabsTrigger value="map">🗺️ الخريطة الحية</TabsTrigger>
+            <TabsTrigger value="ingestion">📥 جلب البيانات</TabsTrigger>
           </TabsList>
 
           {/* ── Dashboard (original view) ── */}
@@ -77,11 +77,9 @@ function App() {
 
       <footer className="border-t mt-12 py-6">
         <div className="container mx-auto px-4 text-center text-sm text-muted-foreground">
-          <p>Flight Intelligence v2 &copy; {new Date().getFullYear()}</p>
+          <p>منصة استخبارات الطيران الإصدار 4.0 &copy; {new Date().getFullYear()}</p>
           <p className="mt-1">
-            Data: <a href="https://opensky-network.org" target="_blank" rel="noreferrer"
-              className="underline">OpenSky Network</a>
-            {' · '}Regions: Middle East · North Africa · Central Asia · East Africa · South Asia
+            المناطق المدعومة: الشرق الأوسط · شمال أفريقيا · آسيا الوسطى
           </p>
         </div>
       </footer>

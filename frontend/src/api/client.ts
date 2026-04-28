@@ -27,8 +27,9 @@ apiClient.interceptors.response.use(
 
 // ── Flights ────────────────────────────────────────────────────────────────
 export const flightsApi = {
-  getFlights: async (page = 1, pageSize = 50): Promise<FlightListResponse> =>
-    (await apiClient.get('/flights', { params: { page, page_size: pageSize } })).data,
+  // SRE FIX: Direct mapping to the Live Proxy API for immediate results
+  getFlights: async (bounds: string = "63.0,12.0,25.0,42.0"): Promise<any> =>
+    (await apiClient.get('/flights/live', { params: { bounds } })).data,
 
   filterFlights: async (params: FlightFilterParams): Promise<FlightListResponse> =>
     (await apiClient.get('/flights/filter', { params })).data,
@@ -36,8 +37,9 @@ export const flightsApi = {
   getFlight: async (id: number) =>
     (await apiClient.get(`/flights/${id}`)).data,
 
-  exportFlights: async (params: FlightFilterParams): Promise<Blob> =>
-    (await apiClient.get('/flights/export/excel', { params, responseType: 'blob' })).data,
+  // SRE FIX: Export Excel directly from the Live API
+  exportFlights: async (bounds: string = "63.0,12.0,25.0,42.0"): Promise<Blob> =>
+    (await apiClient.get('/flights/live', { params: { bounds, export: true }, responseType: 'blob' })).data,
 };
 
 // ── Airlines ───────────────────────────────────────────────────────────────

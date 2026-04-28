@@ -27,8 +27,8 @@ export function Header({ onRefresh, loading }: HeaderProps) {
               <Plane className="h-6 w-6 text-primary-foreground" />
             </div>
             <div>
-              <h1 className="text-xl font-bold">Flight Intelligence</h1>
-              <p className="text-xs text-muted-foreground">Real-time Flight Tracking & Analytics</p>
+              <h1 className="text-xl font-bold">منصة استخبارات الطيران</h1>
+              <p className="text-xs text-muted-foreground">تتبع وتحليل الرحلات الجوية في الوقت الفعلي</p>
             </div>
           </div>
 
@@ -41,7 +41,7 @@ export function Header({ onRefresh, loading }: HeaderProps) {
                 className="hidden sm:flex items-center gap-1"
               >
                 <Activity className="h-3 w-3" />
-                {healthy ? 'System Online' : 'System Offline'}
+                {healthy ? 'النظام متصل' : 'النظام غير متصل'}
               </Badge>
             )}
 
@@ -52,8 +52,8 @@ export function Header({ onRefresh, loading }: HeaderProps) {
               onClick={handleRefresh}
               disabled={loading}
             >
-              <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
-              Refresh
+              <RefreshCw className={`h-4 w-4 ml-2 ${loading ? 'animate-spin' : ''}`} />
+              تحديث البيانات
             </Button>
           </div>
         </div>

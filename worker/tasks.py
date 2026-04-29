@@ -47,7 +47,7 @@ def ingest_flights_task(self, hours: int = 2):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Geo-filtered periodic ingestion (SRE Production: AirLabs ONLY)
+# Geo-filtered periodic ingestion (SRE Production: FR24)
 # ─────────────────────────────────────────────────────────────────────────────
 
 @shared_task(
@@ -58,48 +58,41 @@ def ingest_flights_task(self, hours: int = 2):
 )
 def ingest_recent_geo_task(self, region_keys: Optional[List[str]] = None,
                             lookback_hours: int = 2):
-    """
-    SRE Production: Ingest real-time flights & routes exclusively from AirLabs.
-    This is the PRIMARY source for live radar data.
-    """
+    """SRE Production: FR24 Global Aggregation"""
+
     # ── SRE GUARD: Wait until database tables are ready ──────────────────
     engine = create_engine(settings.DATABASE_URL)
     inspector = inspect(engine)
-    for attempt in range(30):  # up to 30 * 2 = 60 seconds
+    for attempt in range(30):
         if 'dim_geography' in inspector.get_table_names():
-            logger.info("Database tables are ready. Starting ingestion...")
+            logger.info("Database tables are ready. Starting FR24 ingestion...")
             break
         logger.warning(f"Waiting for database tables... attempt {attempt+1}/30")
         time.sleep(2)
     else:
-        logger.error("Database tables not ready after 60s. Aborting ingestion.")
+        logger.error("Database tables not ready after 60s. Aborting FR24 ingestion.")
         return {'status': 'error', 'message': 'Tables not ready'}
     # ──────────────────────────────────────────────────────────────────────
 
     try:
-        # Get active regions (all or specified ones)
         active_keys = region_keys or settings.get_active_region_keys()
         regions = [r for r in (settings.get_region(k) for k in active_keys) if r]
-        
+
         if not regions:
-            logger.warning("[AirLabs] No valid regions configured")
             return {"status": "skipped", "reason": "no regions"}
 
-        # Initialize ingestion service
         svc = FlightIngestionService()
-        logger.info(f"[AirLabs Master] Running real-time ingestion for {[r.key for r in regions]}")
-        
-        # Call our NEW and ONLY source for live radar
-        final_result = svc.ingest_from_airlabs(regions)
+        logger.info(f"[FR24 Task] Starting live sweep for {[r.key for r in regions]}")
 
-        logger.info(f"[AirLabs Master] Ingestion completed: {final_result}")
+        final_result = svc.ingest_live_radar_from_fr24(regions)
+
+        logger.info(f"[FR24 Task] Sweep Complete: {final_result}")
         return {"status": "success", "result": final_result}
-        
+
     except SoftTimeLimitExceeded:
-        logger.warning("[AirLabs] Task timed out")
         return {"status": "timeout"}
     except Exception as exc:
-        logger.error(f"[AirLabs Master] Critical failure: {exc}", exc_info=True)
+        logger.error(f"[FR24 Task] Failed: {exc}", exc_info=True)
         try:
             self.retry(exc=exc)
         except MaxRetriesExceededError:
@@ -160,6 +153,33 @@ def ingest_historical_flights(self, begin_date: str, end_date: str,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Historical Summaries Fetch (New FR24 Flexible Task)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@shared_task(
+    bind=True, max_retries=2, default_retry_delay=60,
+    name="worker.tasks.fetch_historical_summaries_task",
+    queue="ingestion",
+)
+def fetch_historical_summaries_task(self, date_from: str, date_to: str, airports: Optional[str] = None):
+    """
+    Flexible task to fetch historical summaries.
+    Can be triggered manually via UI or CLI.
+    """
+    logger.info(f"Starting historical fetch: {date_from} to {date_to}, airports: {airports}")
+    svc = FlightIngestionService()
+    try:
+        result = svc.fetch_and_store_summaries(date_from, date_to, airports)
+        return {"status": "success", "result": result}
+    except Exception as exc:
+        logger.error(f"Historical fetch failed: {exc}", exc_info=True)
+        try:
+            self.retry(exc=exc)
+        except MaxRetriesExceededError:
+            return {"status": "failed", "error": str(exc)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Cleanup (runs daily)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -179,7 +199,7 @@ def cleanup_old_data_task(self, days: int = 0):
             deleted = svc.cleanup_old_data(retention)
         logger.info(f"[cleanup] Deleted {deleted} flights older than {retention} days")
         return {"status": "success", "deleted": deleted}
-    except Exception as exc:
+    except Exception as scr:
         logger.error(f"[cleanup] Failed: {exc}")
         try:
             self.retry(exc=exc)
@@ -204,7 +224,7 @@ def run_realtime_radar_task(self):
 
 @shared_task(
     bind=True,
-    name="worker.tasks.ingest_aviationstack_task", 
+    name="worker.tasks.ingest_aviationstack_task",
     queue="ingestion",
 )
 def ingest_aviationstack_task(self):

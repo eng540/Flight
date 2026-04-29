@@ -1,105 +1,92 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
-import { 
-  Table, 
-  TableBody, 
-  TableCell, 
-  TableHead, 
-  TableHeader, 
-  TableRow 
+import {
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
-import { 
-  ChevronLeft, 
-  ChevronRight, 
-  Plane, 
-  Download,
-  Search,
-  Filter,
-  Calendar,
-  MapPin
-} from 'lucide-react';
-import { FlightListResponse, FlightFilterParams } from '@/types';
+import { Plane, Download, MapPin, Loader2, Calendar, ArrowUp, Gauge } from 'lucide-react';
 import { flightsApi } from '@/api/client';
 import { toast } from 'sonner';
 
-interface FlightsTableProps {
-  data: FlightListResponse | null;
-  loading: boolean;
-  filters: FlightFilterParams;
-  onFilterChange: (filters: FlightFilterParams) => void;
-  onPageChange: (page: number) => void;
-}
-
-export function FlightsTable({ 
-  data, 
-  loading, 
-  filters, 
-  onFilterChange, 
-  onPageChange 
-}: FlightsTableProps) {
-  const [searchTerm, setSearchTerm] = useState('');
+export function FlightsTable() {
+  const [flights, setFlights] = useState<any[]>([]);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+  const [page, setPage] = useState(1);
+  const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+  
+  const defaultBounds = "63.0,12.0,25.0,42.0";
+  const pageSize = 50;
+
+  const loadData = useCallback(async () => {
+    try {
+      setLoading(true);
+      // SRE FIX: Fetching paginated data directly from backend
+      const res = await flightsApi.getFlights(defaultBounds, searchTerm, page, pageSize);
+      
+      setFlights(res?.data || []);
+      setTotal(res?.total || 0);
+      setTotalPages(res?.pages || 1);
+    } catch (e) {
+      toast.error('حدث خطأ أثناء جلب البيانات الحية');
+    } finally {
+      setLoading(false);
+    }
+  }, [searchTerm, page]);
+
+  // Reset to page 1 when search term changes
+  useEffect(() => {
+    setPage(1);
+  }, [searchTerm]);
+
+  useEffect(() => {
+    loadData();
+    const interval = setInterval(loadData, 30000);
+    return () => clearInterval(interval);
+  }, [loadData]);
 
   const handleExport = async () => {
     try {
       setExporting(true);
-      const blob = await flightsApi.exportFlights(filters);
-      
-      // Create download link
+      const blob = await flightsApi.exportFlights(defaultBounds, searchTerm);
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.setAttribute('download', `flights_export_${new Date().toISOString().split('T')[0]}.xlsx`);
+      const dateStr = new Date().toISOString().split('T')[0];
+      link.setAttribute('download', `الرحلات_الحية_${dateStr}.xlsx`);
       document.body.appendChild(link);
       link.click();
       link.remove();
       window.URL.revokeObjectURL(url);
-      
-      toast.success('Flights exported successfully');
+      toast.success('تم تصدير تقرير الرحلات بنجاح');
     } catch (error) {
-      toast.error('Failed to export flights');
-      console.error('Export error:', error);
+      toast.error('فشل في تصدير البيانات');
     } finally {
       setExporting(false);
     }
   };
 
-  const handleSearch = () => {
-    onFilterChange({ ...filters, callsign: searchTerm || undefined });
+  const formatAltitude = (meters: number | null | undefined) => {
+    if (meters == null) return '-';
+    return `${Math.round(meters).toLocaleString()} م`;
   };
 
-  const formatTimestamp = (timestamp: number | null): string => {
-    if (!timestamp) return '-';
-    return new Date(timestamp * 1000).toLocaleString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
+  const formatSpeed = (kmh: number | null | undefined) => {
+    if (kmh == null) return '-';
+    return `${Math.round(kmh).toLocaleString()} كم/س`;
+  };
+
+  const formatTimestamp = (ts: number | string | null | undefined) => {
+    if (!ts) return '-';
+    const date = typeof ts === 'number' ? new Date(ts * 1000) : new Date(ts);
+    return date.toLocaleString('ar-SA', {
+      month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
     });
   };
-
-  const formatDuration = (seconds: number | null): string => {
-    if (!seconds) return '-';
-    const hours = Math.floor(seconds / 3600);
-    const minutes = Math.floor((seconds % 3600) / 60);
-    return `${hours}h ${minutes}m`;
-  };
-
-  if (loading) {
-    return (
-      <Card>
-        <CardHeader>
-          <div className="h-6 w-48 bg-muted rounded animate-pulse"></div>
-        </CardHeader>
-        <CardContent>
-          <div className="h-96 bg-muted rounded animate-pulse"></div>
-        </CardContent>
-      </Card>
-    );
-  }
 
   return (
     <Card>
@@ -107,104 +94,72 @@ export function FlightsTable({
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <CardTitle className="flex items-center gap-2">
             <Plane className="h-5 w-5" />
-            Flights
-            {data && (
-              <Badge variant="secondary">
-                {data.total.toLocaleString()} total
-              </Badge>
-            )}
+            الرحلات الحية
+            <Badge variant="secondary">{total} رحلة</Badge>
           </CardTitle>
-          
+
           <div className="flex flex-col sm:flex-row gap-2">
-            {/* Search */}
             <div className="flex gap-2">
               <Input
-                placeholder="Search callsign..."
+                placeholder="ابحث برمز النداء أو ICAO..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-                className="w-48"
+                className="w-64"
               />
-              <Button variant="outline" size="icon" onClick={handleSearch}>
-                <Search className="h-4 w-4" />
-              </Button>
             </div>
-            
-            {/* Export Button */}
-            <Button 
-              variant="outline" 
-              onClick={handleExport}
-              disabled={exporting || !data?.data.length}
-            >
-              <Download className="h-4 w-4 mr-2" />
-              {exporting ? 'Exporting...' : 'Export'}
+
+            <Button variant="outline" onClick={handleExport} disabled={exporting || total === 0}>
+              <Download className="h-4 w-4 ml-2" />
+              {exporting ? 'جارٍ التصدير...' : 'تصدير Excel'}
             </Button>
           </div>
         </div>
       </CardHeader>
-      
+
       <CardContent>
-        <div className="rounded-md border">
+        <div className="rounded-md border relative min-h-[400px]">
+          {loading && (
+            <div className="absolute inset-0 bg-background/50 backdrop-blur-sm flex items-center justify-center z-10">
+              <Loader2 className="h-8 w-8 animate-spin text-primary" />
+            </div>
+          )}
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Callsign</TableHead>
-                <TableHead>ICAO24</TableHead>
-                <TableHead>Origin</TableHead>
-                <TableHead>From</TableHead>
-                <TableHead>To</TableHead>
-                <TableHead>First Seen</TableHead>
-                <TableHead>Duration</TableHead>
+                <TableHead className="text-right">رقم الرحلة</TableHead>
+                <TableHead className="text-right">الهوية (ICAO24)</TableHead>
+                <TableHead className="text-right">مطار الإقلاع</TableHead>
+                <TableHead className="text-right">مطار الوصول</TableHead>
+                <TableHead className="text-right">الارتفاع</TableHead>
+                <TableHead className="text-right">السرعة</TableHead>
+                <TableHead className="text-right">آخر رصد</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {data?.data.length === 0 ? (
+              {flights.length === 0 && !loading ? (
                 <TableRow>
                   <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
-                    No flights found
+                    لا توجد رحلات مطابقة للبحث
                   </TableCell>
                 </TableRow>
               ) : (
-                data?.data.map((flight) => (
-                  <TableRow key={flight.id}>
-                    <TableCell>
-                      <Badge variant="outline" className="font-mono">
-                        {flight.callsign || 'N/A'}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="font-mono text-xs">
-                      {flight.icao24.toUpperCase()}
-                    </TableCell>
-                    <TableCell>{flight.origin_country || 'Unknown'}</TableCell>
+                flights.map((flight: any, idx: number) => (
+                  <TableRow key={flight.id || idx}>
+                    <TableCell><Badge variant="outline" className="font-mono">{flight.callsign || 'N/A'}</Badge></TableCell>
+                    <TableCell className="font-mono text-xs">{flight.icao24?.toUpperCase() || 'N/A'}</TableCell>
                     <TableCell>
                       {flight.est_departure_airport ? (
-                        <Badge variant="secondary" className="font-mono">
-                          <MapPin className="h-3 w-3 mr-1" />
-                          {flight.est_departure_airport}
-                        </Badge>
-                      ) : (
-                        '-'
-                      )}
+                        <Badge variant="secondary" className="font-mono"><MapPin className="h-3 w-3 ml-1" />{flight.est_departure_airport}</Badge>
+                      ) : '-'}
                     </TableCell>
                     <TableCell>
                       {flight.est_arrival_airport ? (
-                        <Badge variant="secondary" className="font-mono">
-                          <MapPin className="h-3 w-3 mr-1" />
-                          {flight.est_arrival_airport}
-                        </Badge>
-                      ) : (
-                        '-'
-                      )}
+                        <Badge variant="secondary" className="font-mono"><MapPin className="h-3 w-3 ml-1" />{flight.est_arrival_airport}</Badge>
+                      ) : '-'}
                     </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-1 text-sm">
-                        <Calendar className="h-3 w-3" />
-                        {formatTimestamp(flight.first_seen)}
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      {formatDuration(flight.duration_seconds)}
-                    </TableCell>
+                    <TableCell><div className="flex items-center gap-1"><ArrowUp className="h-3 w-3" />{formatAltitude(flight.altitude)}</div></TableCell>
+                    <TableCell><div className="flex items-center gap-1"><Gauge className="h-3 w-3" />{formatSpeed(flight.velocity)}</div></TableCell>
+                    <TableCell><div className="flex items-center gap-1 text-sm"><Calendar className="h-3 w-3" />{formatTimestamp(flight.last_seen)}</div></TableCell>
                   </TableRow>
                 ))
               )}
@@ -212,32 +167,28 @@ export function FlightsTable({
           </Table>
         </div>
 
-        {/* Pagination */}
-        {data && data.pages > 1 && (
+        {/* Pagination Controls */}
+        {totalPages > 1 && (
           <div className="flex items-center justify-between mt-4">
-            <div className="text-sm text-muted-foreground">
-              Page {data.page} of {data.pages}
-            </div>
-            <div className="flex gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => onPageChange(data.page - 1)}
-                disabled={data.page <= 1}
-              >
-                <ChevronLeft className="h-4 w-4 mr-1" />
-                Previous
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => onPageChange(data.page + 1)}
-                disabled={data.page >= data.pages}
-              >
-                Next
-                <ChevronRight className="h-4 w-4 ml-1" />
-              </Button>
-            </div>
+            <Button 
+              variant="outline" 
+              size="sm" 
+              disabled={page === 1 || loading} 
+              onClick={() => setPage(p => p - 1)}
+            >
+              السابق
+            </Button>
+            <span className="text-sm text-muted-foreground">
+              صفحة {page} من {totalPages}
+            </span>
+            <Button 
+              variant="outline" 
+              size="sm" 
+              disabled={page === totalPages || loading} 
+              onClick={() => setPage(p => p + 1)}
+            >
+              التالي
+            </Button>
           </div>
         )}
       </CardContent>

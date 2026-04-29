@@ -27,8 +27,14 @@ apiClient.interceptors.response.use(
 
 // ── Flights ────────────────────────────────────────────────────────────────
 export const flightsApi = {
-  getFlights: async (page = 1, pageSize = 50): Promise<FlightListResponse> =>
-    (await apiClient.get('/flights', { params: { page, page_size: pageSize } })).data,
+  // SRE FIX: Added page, page_size and callsign parameters for server-side pagination and search
+  getFlights: async (
+    bounds: string = "63.0,12.0,25.0,42.0",
+    callsign: string = "",
+    page: number = 1,
+    page_size: number = 50
+  ): Promise<any> =>
+    (await apiClient.get('/flights/live', { params: { bounds, callsign, page, page_size } })).data,
 
   filterFlights: async (params: FlightFilterParams): Promise<FlightListResponse> =>
     (await apiClient.get('/flights/filter', { params })).data,
@@ -36,8 +42,9 @@ export const flightsApi = {
   getFlight: async (id: number) =>
     (await apiClient.get(`/flights/${id}`)).data,
 
-  exportFlights: async (params: FlightFilterParams): Promise<Blob> =>
-    (await apiClient.get('/flights/export/excel', { params, responseType: 'blob' })).data,
+  // SRE FIX: Export Excel with optional callsign filter
+  exportFlights: async (bounds: string = "63.0,12.0,25.0,42.0", callsign: string = ""): Promise<Blob> =>
+    (await apiClient.get('/flights/live', { params: { bounds, callsign, export: true }, responseType: 'blob' })).data,
 };
 
 // ── Airlines ───────────────────────────────────────────────────────────────

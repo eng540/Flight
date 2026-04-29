@@ -1,5 +1,5 @@
 """
-Enterprise Aviation Intelligence Models (v3.0)
+Enterprise Aviation Intelligence Models (v3.1 - FR24 Extended)
 SQLAlchemy ORM representation of the Snowflake Schema.
 """
 from sqlalchemy import (
@@ -114,6 +114,10 @@ class FactFlightSession(Base):
     flight_status = Column(String(20), default="active", index=True)
     total_distance_km = Column(Float, nullable=True)
     max_altitude_m = Column(Float, nullable=True)
+
+    # ── FR24 EXTENSIONS ──────────────────────────────────────────────────
+    fr24_id = Column(String(50), unique=True, index=True, nullable=True)
+    flight_number = Column(String(20), nullable=True)
     
     # Relationships
     aircraft = relationship("DimAircraft")
@@ -147,6 +151,9 @@ class TrackTelemetry(Base):
     velocity_kmh = Column(Float, nullable=True)
     heading_deg = Column(Float, nullable=True)
     vertical_rate_ms = Column(Float, nullable=True)
+
+    # ── FR24 EXTENSIONS ──────────────────────────────────────────────────
+    vspeed_fpm = Column(Float, nullable=True)
     
     is_on_ground = Column(Boolean, default=False)
     squawk = Column(String(4), nullable=True)

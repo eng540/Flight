@@ -153,6 +153,33 @@ def ingest_historical_flights(self, begin_date: str, end_date: str,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Historical Summaries Fetch (New FR24 Flexible Task)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@shared_task(
+    bind=True, max_retries=2, default_retry_delay=60,
+    name="worker.tasks.fetch_historical_summaries_task",
+    queue="ingestion",
+)
+def fetch_historical_summaries_task(self, date_from: str, date_to: str, airports: Optional[str] = None):
+    """
+    Flexible task to fetch historical summaries.
+    Can be triggered manually via UI or CLI.
+    """
+    logger.info(f"Starting historical fetch: {date_from} to {date_to}, airports: {airports}")
+    svc = FlightIngestionService()
+    try:
+        result = svc.fetch_and_store_summaries(date_from, date_to, airports)
+        return {"status": "success", "result": result}
+    except Exception as exc:
+        logger.error(f"Historical fetch failed: {exc}", exc_info=True)
+        try:
+            self.retry(exc=exc)
+        except MaxRetriesExceededError:
+            return {"status": "failed", "error": str(exc)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Cleanup (runs daily)
 # ─────────────────────────────────────────────────────────────────────────────
 

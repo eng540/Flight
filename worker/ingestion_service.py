@@ -1,13 +1,13 @@
 """
-Enterprise Ingestion Service (v5.0 - FlightRadar24 AeroAPI Master)
+Enterprise Ingestion Service (v5.1 - FR24 Historical Fetch)
 Strictly compliant with FR24 OpenAPI v1 Specification.
 Features: Smart Bounding Box, ISO8601 parsing, Circuit Breaking, and Fallbacks.
+Added: fetch_and_store_summaries for historical data ingestion.
 """
 import logging
 import sys
 import os
 import time
-import hashlib
 import requests
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone
@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'backend'))
 
 from app.schemas import RawIngestionPayload
 from app.crud import EnterpriseDataRouter
+from app import models
 
 logger = logging.getLogger(__name__)
 
@@ -186,3 +187,124 @@ class FlightIngestionService:
     def cleanup_old_data(self, days: int) -> int:
         logger.info(f"[cleanup] SRE Note: Handled by DB partitioning.")
         return 0
+
+    # ── Historical Data Fetch ─────────────────────────────────────────────────
+    def fetch_and_store_summaries(self, date_from: str, date_to: str, airports: Optional[str] = None) -> Dict[str, int]:
+        """
+        Fetches historical flight summaries from FR24's /api/flight-summary/light endpoint.
+        Stores the results into fact_flight_session, resolving all dimensions.
+        date_from/date_to formats: '2026-02-01T00:00:00Z' (ISO 8601)
+        airports: optional comma-separated list of airport codes (e.g., 'OMDB,OKBK')
+        """
+        stats = {"fetched": 0, "inserted": 0, "skipped_duplicates": 0, "errors": 0}
+        db = self._new_db()
+        
+        params = {
+            "flight_datetime_from": date_from,
+            "flight_datetime_to": date_to
+        }
+        if airports:
+            params["airports"] = airports
+
+        logger.info(f"[FR24 History] Fetching summaries from {date_from} to {date_to} for airports: {airports or 'ALL'}")
+        
+        try:
+            data = self._safe_request("/api/flight-summary/light", params)
+            if not data or "data" not in data:
+                return stats
+
+            flights = data["data"]
+            stats["fetched"] = len(flights)
+
+            # Caches to prevent repeated DB lookups
+            geo_cache, operator_cache, aircraft_cache = {}, {}, {}
+
+            for f in flights:
+                fr24_id = f.get("fr24_id")
+                if not fr24_id:
+                    continue
+
+                # Check for duplicates (Idempotency)
+                exists = db.query(models.FactFlightSession.session_id).filter(
+                    models.FactFlightSession.fr24_id == fr24_id
+                ).first()
+                
+                if exists:
+                    stats["skipped_duplicates"] += 1
+                    continue
+
+                try:
+                    dep_icao = f.get("orig_icao")
+                    arr_icao = f.get("dest_icao")
+                    op_icao = f.get("operating_as")
+                    hex_code = str(f.get("hex")).lower()[:6] if f.get("hex") else None
+
+                    # Resolve Dimension: Geography (Airports)
+                    for icao in [dep_icao, arr_icao]:
+                        if icao and icao not in geo_cache:
+                            EnterpriseDataRouter._ensure_geo(db, geo_cache, icao)
+                    
+                    # Resolve Dimension: Operator (Airline)
+                    if op_icao and op_icao not in operator_cache:
+                        EnterpriseDataRouter._ensure_operator(db, operator_cache, op_icao)
+
+                    # Resolve Dimension: Aircraft
+                    aircraft_id = None
+                    if hex_code:
+                        if hex_code not in aircraft_cache:
+                            aircraft = db.query(models.DimAircraft).filter(models.DimAircraft.icao24 == hex_code).first()
+                            if not aircraft:
+                                aircraft = models.DimAircraft(
+                                    icao24=hex_code,
+                                    registration=f.get("reg"),
+                                    type_code=f.get("type"),
+                                    operator_id=operator_cache.get(op_icao)
+                                )
+                                db.add(aircraft)
+                                db.flush()
+                            aircraft_cache[hex_code] = aircraft.id
+                        aircraft_id = aircraft_cache[hex_code]
+
+                    # Safe date parsing
+                    def parse_dt(dt_str):
+                        if not dt_str: 
+                            return None
+                        try:
+                            return datetime.fromisoformat(dt_str).replace(tzinfo=timezone.utc)
+                        except (ValueError, TypeError):
+                            return None
+
+                    # Create and insert the Flight Session
+                    session = models.FactFlightSession(
+                        fr24_id=fr24_id,
+                        flight_number=f.get("flight"),
+                        callsign=f.get("callsign"),
+                        aircraft_id=aircraft_id,
+                        operator_id=operator_cache.get(op_icao),
+                        dep_airport_id=geo_cache.get(dep_icao) if dep_icao else None,
+                        arr_airport_id=geo_cache.get(arr_icao) if arr_icao else None,
+                        first_seen_ts=parse_dt(f.get("first_seen")) or datetime.now(timezone.utc),
+                        last_seen_ts=parse_dt(f.get("last_seen")) or datetime.now(timezone.utc),
+                        actual_takeoff_ts=parse_dt(f.get("datetime_takeoff")),
+                        actual_landing_ts=parse_dt(f.get("datetime_landed")),
+                        flight_status="historical" if f.get("flight_ended") else "active"
+                    )
+                    db.add(session)
+                    stats["inserted"] += 1
+
+                except Exception as e:
+                    logger.error(f"[FR24 History] Error processing flight {fr24_id}: {e}")
+                    stats["errors"] += 1
+                    db.rollback()
+                    continue
+
+            db.commit()
+            logger.info(f"[FR24 History] Done. Stats: {stats}")
+            return stats
+
+        except Exception as e:
+            logger.error(f"[FR24 History] Critical Error: {e}", exc_info=True)
+            db.rollback()
+            return stats
+        finally:
+            db.close()
